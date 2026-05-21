@@ -1,0 +1,51 @@
+name: Run X Bot
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+      - name: Restore bot cache
+        id: cache-restore
+        uses: actions/cache@v4
+        with:
+          path: |
+            posted_cache.txt
+            replied_cache.txt
+            captcha_lock.txt
+          key: bot-cache-${{ github.run_id }}
+          restore-keys: |
+            bot-cache-
+      - name: Run bot
+        env:
+          SESSION_JSON: ${{ secrets.SESSION_JSON }}
+          SOURCES: ${{ secrets.SOURCES }}
+          HEADLESS: true
+        run: python aftrmth.py
+      - name: Save bot cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            posted_cache.txt
+            replied_cache.txt
+            captcha_lock.txt
+          key: bot-cache-${{ github.run_id }}
