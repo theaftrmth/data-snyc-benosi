@@ -1,0 +1,9 @@
+session.json
+session_playwright.json
+exported_cookies.json
+posted_cache.txt
+replied_cache.txt
+captcha_lock.txt
+downloaded_media/
+__pycache__/
+*.pyc
