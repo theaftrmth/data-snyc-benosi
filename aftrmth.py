@@ -362,7 +362,7 @@ def download_video_with_ytdlp(tweet_url):
         if result.returncode == 0 and os.path.exists(out_path):
             size = os.path.getsize(out_path)
             print(f"  📥 Video downloaded: {size // 1024}KB")
-            if size > 15 * 1024 * 1024:
+            if size > 70 * 1024 * 1024:
                 print("  ⚠️ Video too large, skip.")
                 os.remove(out_path)
                 return None
