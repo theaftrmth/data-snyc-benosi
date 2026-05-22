@@ -1,7 +1,5 @@
 name: Run X Bot
 on:
-  schedule:
-    - cron: '*/30 * * * *'
   workflow_dispatch:
 jobs:
   run-bot:
