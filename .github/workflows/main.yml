@@ -26,6 +26,8 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
+          # ফোর্স করে playwright-stealth ইন্সটল (ক্যাশ বাইপাস)
+          pip install --no-cache-dir --force-reinstall playwright-stealth
           pip install -r requirements.txt
           playwright install --with-deps chromium
           sudo apt-get install -y xvfb
@@ -47,7 +49,7 @@ jobs:
           SESSION_JSON: ${{ secrets.SESSION_JSON }}
           SOURCES: ${{ secrets.SOURCES }}
           HEADLESS: false
-        run: xvfb-run python aftrmth.py
+        run: xvfb-run python aftrmth.py   # আপনার ফাইলের নাম ঠিক করে দিন
 
       - name: Save bot cache
         if: always()
