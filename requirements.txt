@@ -1,6 +1,6 @@
 playwright
-playwright-stealth
-yt-dlp
+playwright-stealth>=1.0.6
 g4f
 pytz
 requests
+yt-dlp
