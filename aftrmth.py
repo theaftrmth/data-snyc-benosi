@@ -6,9 +6,11 @@ import hashlib
 import requests
 import subprocess
 import json
+import math
 from datetime import datetime, timezone
 import pytz
 from playwright.sync_api import sync_playwright
+from playwright_stealth import stealth_sync
 import g4f
 
 # ──────────────────────────────────────────────
@@ -362,8 +364,8 @@ def download_video_with_ytdlp(tweet_url):
         if result.returncode == 0 and os.path.exists(out_path):
             size = os.path.getsize(out_path)
             print(f"  📥 Video downloaded: {size // 1024}KB")
-            if size > 70 * 1024 * 1024:
-                print("  ⚠️ Video too large, skip.")
+            if size > 50 * 1024 * 1024:   # 50 MB limit
+                print("  ⚠️ Video too large (50MB+), skip.")
                 os.remove(out_path)
                 return None
             return out_path
@@ -554,6 +556,8 @@ RULES FOR REWRITING:
 - Preserve direct quotes word for word
 - Avoid double colon (wrong: "Trump: says...", correct: "Trump says...")
 - Do NOT start the rewritten text with BREAKING, DEVELOPING, WATCH, or INTERESTING
+- When mentioning official positions, use the full formal title (e.g., "Federal Reserve Chair" not just "Chair", "Secretary of State" not "Secretary")
+- If a person holds a major office, mention the office clearly with the name (e.g., "Fed Chair Jerome Powell")
 
 RULES FOR LABEL:
 - BREAKING → urgent news, military action, major political event (DEFAULT)
@@ -609,8 +613,21 @@ Tweet:
 
 
 # ──────────────────────────────────────────────
-# TYPING / POSTING
+# HUMAN-LIKE MOUSE MOVEMENT & TYPING
 # ──────────────────────────────────────────────
+
+def human_mouse_move(page, target_x, target_y, steps=15):
+    """Bezier-curve mouse movement"""
+    start_x, start_y = random.randint(100, 300), random.randint(100, 300)
+    cp_x = (start_x + target_x) / 2 + random.randint(-80, 80)
+    cp_y = (start_y + target_y) / 2 + random.randint(-80, 80)
+    for i in range(steps + 1):
+        t = i / steps
+        x = (1-t)**2 * start_x + 2*(1-t)*t * cp_x + t**2 * target_x
+        y = (1-t)**2 * start_y + 2*(1-t)*t * cp_y + t**2 * target_y
+        page.mouse.move(x, y)
+        time.sleep(random.uniform(0.005, 0.015))
+
 
 def human_type(element, text):
     element.click()
@@ -622,10 +639,20 @@ def human_type(element, text):
     time.sleep(random.uniform(0.5, 1.2))
 
 
+# ──────────────────────────────────────────────
+# POSTING WITH MOUSE MOVEMENTS
+# ──────────────────────────────────────────────
+
 def type_and_submit(page, text, media_paths):
+    # Move mouse around before interacting
+    viewport = page.viewport_size
+    human_mouse_move(page, viewport['width']//2, viewport['height']//2)
     textarea = page.wait_for_selector(
         'div[data-testid="tweetTextarea_0"]', timeout=25000
     )
+    # Move to textarea and click
+    box = textarea.bounding_box()
+    human_mouse_move(page, box['x'] + box['width']//2, box['y'] + box['height']//2)
     human_type(textarea, text)
     page.wait_for_timeout(random.randint(800, 1500))
 
@@ -635,6 +662,8 @@ def type_and_submit(page, text, media_paths):
             if file_input:
                 file_input.set_input_files(mp)
                 page.wait_for_timeout(random.randint(2000, 4000))
+                # Move mouse away after file selection
+                human_mouse_move(page, viewport['width']//2, viewport['height']//2)
         except:
             pass
 
@@ -642,6 +671,8 @@ def type_and_submit(page, text, media_paths):
         btn = page.wait_for_selector('div[data-testid="tweetButtonInline"]', timeout=8000)
     except:
         btn = page.wait_for_selector('button[data-testid="tweetButton"]', timeout=8000)
+    box = btn.bounding_box()
+    human_mouse_move(page, box['x'] + box['width']//2, box['y'] + box['height']//2)
     page.wait_for_timeout(random.randint(500, 1200))
     btn.click()
     page.wait_for_timeout(5000)
@@ -662,6 +693,8 @@ def open_compose_and_post(page, text, media_paths):
                     btn = page.wait_for_selector(
                         'a[data-testid="SideNav_NewTweet_Button"]', timeout=15000
                     )
+                    box = btn.bounding_box()
+                    human_mouse_move(page, box['x'] + box['width']//2, box['y'] + box['height']//2)
                     btn.click()
             else:
                 page.goto("https://x.com/compose/post", wait_until="domcontentloaded", timeout=60000)
@@ -781,6 +814,9 @@ def do_reply(page, target_url, target_tweet, target_text, target_source, reply_t
                 print("  ⚠️ Reply button not found.")
                 return
 
+        # Mouse move before clicking reply
+        box = reply_btn.bounding_box()
+        human_mouse_move(page, box['x'] + box['width']//2, box['y'] + box['height']//2)
         reply_btn.click()
         page.wait_for_timeout(random.randint(2000, 4000))
 
@@ -798,6 +834,8 @@ def do_reply(page, target_url, target_tweet, target_text, target_source, reply_t
         except:
             submit = page.wait_for_selector('button[data-testid="tweetButton"]', timeout=10000)
 
+        box = submit.bounding_box()
+        human_mouse_move(page, box['x'] + box['width']//2, box['y'] + box['height']//2)
         page.wait_for_timeout(random.randint(500, 1200))
         submit.click()
         page.wait_for_timeout(4000)
@@ -826,7 +864,8 @@ def run_bot():
     print(f"\n🤖 Bot started — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     with sync_playwright() as p:
-        headless = os.environ.get("HEADLESS", "true").lower() != "false"
+        # Use headless=False with Xvfb in CI; locally set HEADLESS=false if needed
+        headless = os.environ.get("HEADLESS", "false").lower() == "true"
         browser = p.chromium.launch(headless=headless)
         session_data = load_session()
         context = browser.new_context(
@@ -839,6 +878,8 @@ def run_bot():
             viewport={'width': 1920, 'height': 1080}
         )
         page = context.new_page()
+        # Activate stealth mode
+        stealth_sync(page)
 
         try:
             posted_cache = load_cache(POSTED_CACHE)
