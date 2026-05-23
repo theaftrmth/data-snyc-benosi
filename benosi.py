@@ -14,7 +14,7 @@ from playwright_stealth import stealth_sync
 import g4f
 
 # ──────────────────────────────────────────────
-# SOURCES (strictly from env: SOURCES = comma,separated,list)
+# SOURCES (from env SOURCES)
 # ──────────────────────────────────────────────
 SOURCES_STR = os.environ.get("SOURCES")
 if not SOURCES_STR:
@@ -43,7 +43,6 @@ os.makedirs(MEDIA_DIR, exist_ok=True)
 # ──────────────────────────────────────────────
 
 def load_session():
-    """Load session from SESSION_JSON env or session.json file."""
     session_json_str = os.environ.get("SESSION_JSON")
     if session_json_str:
         try:
@@ -74,14 +73,8 @@ def validate_session():
 
 
 # ──────────────────────────────────────────────
-# SLEEP / LOCK
+# CAPTCHA LOCK
 # ──────────────────────────────────────────────
-
-def is_sleeping_time():
-    tz = pytz.timezone('US/Eastern')
-    hour = datetime.now(tz).hour
-    return 1 <= hour < 6
-
 
 def is_captcha_locked():
     if not os.path.exists(CAPTCHA_LOCK_FILE):
@@ -364,7 +357,7 @@ def download_video_with_ytdlp(tweet_url):
         if result.returncode == 0 and os.path.exists(out_path):
             size = os.path.getsize(out_path)
             print(f"  📥 Video downloaded: {size // 1024}KB")
-            if size > 50 * 1024 * 1024:   # 50 MB limit
+            if size > 50 * 1024 * 1024:
                 print("  ⚠️ Video too large (50MB+), skip.")
                 os.remove(out_path)
                 return None
@@ -438,7 +431,7 @@ def ai_call(prompt):
 
 
 # ──────────────────────────────────────────────
-# AI SELECTION (POST & REPLY)
+# AI SELECTION (POST)
 # ──────────────────────────────────────────────
 
 def ai_select_best_tweet(tweet_list):
@@ -470,39 +463,6 @@ Example: 2"""
                 return tweet_list[idx]
     except Exception as e:
         print(f"  ⚠️ AI post selection error: {e}")
-    return None
-
-
-def ai_select_best_reply_target(tweet_list):
-    try:
-        shortlist = []
-        for t in tweet_list:
-            shortlist.append({
-                "source": t["source"],
-                "text": t["text"][:150],
-                "likes": t.get("likes", 0),
-                "age_min": t.get("age_min", 0)
-            })
-        prompt = f"""You are a sharp geopolitical commentator on X/Twitter.
-You need to reply to ONE of these tweets with a valuable insight, fact-check, or strong take.
-Pick the tweet that is MOST worthy of a reply, considering:
-- Is it controversial, misleading, or lacking context?
-- Would a reply add significant value or go viral?
-- Is it time-sensitive and high-impact?
-- Avoid purely promotional or trivial tweets.
-
-Tweets:
-{json.dumps(shortlist, indent=2, ensure_ascii=False)}
-
-Return ONLY the index (0-based) of the best tweet. Nothing else.
-Example: 2"""
-        result = ai_call(prompt)
-        if result and result.strip().isdigit():
-            idx = int(result.strip())
-            if 0 <= idx < len(tweet_list):
-                return tweet_list[idx]
-    except Exception as e:
-        print(f"  ⚠️ AI reply selection error: {e}")
     return None
 
 
@@ -556,8 +516,8 @@ RULES FOR REWRITING:
 - Preserve direct quotes word for word
 - Avoid double colon (wrong: "Trump: says...", correct: "Trump says...")
 - Do NOT start the rewritten text with BREAKING, DEVELOPING, WATCH, or INTERESTING
-- When mentioning official positions, use the full formal title (e.g., "Federal Reserve Chair" not just "Chair", "Secretary of State" not "Secretary")
-- If a person holds a major office, mention the office clearly with the name (e.g., "Fed Chair Jerome Powell")
+- When mentioning official positions, use the full formal title (e.g., "Federal Reserve Chair" not just "Chair")
+- Paraphrase the tweet naturally in simple and easy words without changing its meaning. Sound like a real human, not a news bot.
 
 RULES FOR LABEL:
 - BREAKING → urgent news, military action, major political event (DEFAULT)
@@ -617,7 +577,6 @@ Tweet:
 # ──────────────────────────────────────────────
 
 def human_mouse_move(page, target_x, target_y, steps=15):
-    """Bezier-curve mouse movement"""
     start_x, start_y = random.randint(100, 300), random.randint(100, 300)
     cp_x = (start_x + target_x) / 2 + random.randint(-80, 80)
     cp_y = (start_y + target_y) / 2 + random.randint(-80, 80)
@@ -644,13 +603,11 @@ def human_type(element, text):
 # ──────────────────────────────────────────────
 
 def type_and_submit(page, text, media_paths):
-    # Move mouse around before interacting
     viewport = page.viewport_size
     human_mouse_move(page, viewport['width']//2, viewport['height']//2)
     textarea = page.wait_for_selector(
         'div[data-testid="tweetTextarea_0"]', timeout=25000
     )
-    # Move to textarea and click
     box = textarea.bounding_box()
     human_mouse_move(page, box['x'] + box['width']//2, box['y'] + box['height']//2)
     human_type(textarea, text)
@@ -662,7 +619,6 @@ def type_and_submit(page, text, media_paths):
             if file_input:
                 file_input.set_input_files(mp)
                 page.wait_for_timeout(random.randint(2000, 4000))
-                # Move mouse away after file selection
                 human_mouse_move(page, viewport['width']//2, viewport['height']//2)
         except:
             pass
@@ -716,155 +672,164 @@ def open_compose_and_post(page, text, media_paths):
 
 
 # ──────────────────────────────────────────────
-# REPLY TARGET
+# TIMELINE SCROLL (human-like)
 # ──────────────────────────────────────────────
 
-def find_best_reply_target(page, replied_cache):
-    print("\n🔍 Searching reply targets (last 3h)...")
+def simulate_scroll(page):
+    try:
+        page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(random.randint(2000, 3000))
+        # Scroll a few times with random pauses
+        for _ in range(random.randint(2, 5)):
+            page.mouse.wheel(0, random.randint(300, 800))
+            time.sleep(random.uniform(0.5, 1.5))
+        print("  📜 Scrolled timeline naturally.")
+    except Exception as e:
+        print(f"  ⚠️ Scroll error: {e}")
 
+
+# ──────────────────────────────────────────────
+# POST-ONLY FUNCTION
+# ──────────────────────────────────────────────
+
+def perform_post_only(page, posted_cache):
     candidates = []
 
     for source in random.sample(SOURCES, len(SOURCES)):
+        print(f"\n📡 @{source} checking...")
         try:
             page.goto(f"https://x.com/{source}", wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(random.randint(3000, 5000))
+            page.wait_for_timeout(random.randint(5000, 8000))
         except:
-            print(f"  ❌ @{source} load failed.")
             continue
 
         if check_captcha(page):
-            return None
+            return False
 
         tweets = page.query_selector_all('article[data-testid="tweet"]')
         if not tweets:
             continue
 
-        for tweet in tweets[:8]:
+        for i, tweet in enumerate(tweets[:6]):
             try:
                 if is_pinned_tweet(tweet) or is_retweet(tweet) or is_thread_continuation(tweet):
                     continue
-
+                text_el = tweet.query_selector('div[data-testid="tweetText"]')
+                txt = text_el.inner_text() if text_el else ""
+                if not txt or is_duplicate(txt, posted_cache) or is_promotional(txt) or is_too_short(txt):
+                    continue
                 age = get_tweet_age_minutes(tweet)
                 if age > 180:
                     continue
-
-                text_el = tweet.query_selector('div[data-testid="tweetText"]')
-                if not text_el:
-                    continue
-                txt = text_el.inner_text()
-
-                if is_promotional(txt) or is_too_short(txt, 30):
-                    continue
-
-                if is_duplicate(txt, replied_cache):
-                    print(f"  ♻️ @{source} — already replied — skip.")
-                    continue
-
-                tweet_url = None
-                try:
-                    link = tweet.query_selector('a[href*="/status/"]')
-                    if link:
-                        tweet_url = "https://x.com" + link.get_attribute("href")
-                except:
-                    pass
-
-                likes = 0
                 like_btn = tweet.query_selector('button[data-testid="like"]')
-                if like_btn:
-                    likes = parse_count(like_btn.inner_text())
-
-                print(f"  📊 @{source} | Age:{age}m Likes:{likes} | {txt[:60]}...")
+                likes = parse_count(like_btn.inner_text()) if like_btn else 0
+                views = get_tweet_view_count(tweet)
+                sc = score_tweet(txt, likes, views, age)
+                print(f"  ✅ {i+1} | Age:{age}m Likes:{likes} Score:{sc:.1f} | {txt[:60]}...")
                 candidates.append({
-                    'source': source,
-                    'text': txt,
-                    'likes': likes,
-                    'age_min': age,
-                    'tweet_element': tweet,
-                    'tweet_url': tweet_url,
+                    'index': i, 'text': txt, 'source': source, 'likes': likes,
+                    'views': views, 'age_min': age, 'score': sc,
                 })
-
-            except Exception as e:
-                print(f"  ⚠️ tweet process error: {e}")
-                continue
+            except:
+                pass
 
     if not candidates:
-        return None
+        print("\n⚠️ No new posts found.")
+        return False
 
     top_candidates = sorted(candidates, key=lambda x: x['likes'], reverse=True)[:5]
-    best = ai_select_best_reply_target(top_candidates)
+    best_tweet = ai_select_best_tweet(top_candidates)
+    if best_tweet is None:
+        best_tweet = max(candidates, key=lambda x: x['score'])
 
-    if not best:
-        best = max(candidates, key=lambda x: x['likes'])
+    original_text = best_tweet['text']
+    chosen_source = best_tweet['source']
+    best_idx = best_tweet['index']
+    print(f"\n🏆 Selected: @{chosen_source} | {original_text[:100]}...")
 
-    print(f"\n  🎯 AI selected reply target: @{best['source']} | Likes:{best['likes']}")
-    return (best['tweet_element'], best['tweet_url'], best['text'], best['source'])
-
-
-def do_reply(page, target_url, target_tweet, target_text, target_source, reply_text):
+    # Reload for media
+    print(f"\n📡 Reloading @{chosen_source} for media...")
+    reloaded = False
     try:
-        if target_url:
-            page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(random.randint(3000, 5000))
-            if check_captcha(page):
-                return
-            reply_btn = page.wait_for_selector('button[data-testid="reply"]', timeout=15000)
-        else:
-            reply_btn = target_tweet.query_selector('button[data-testid="reply"]')
-            if not reply_btn:
-                print("  ⚠️ Reply button not found.")
-                return
+        page.goto(f"https://x.com/{chosen_source}", wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(random.randint(3000, 5000))
+        reloaded = True
+    except:
+        pass
 
-        # Mouse move before clicking reply
-        box = reply_btn.bounding_box()
-        human_mouse_move(page, box['x'] + box['width']//2, box['y'] + box['height']//2)
-        reply_btn.click()
-        page.wait_for_timeout(random.randint(2000, 4000))
+    has_video = False
+    media_paths = []
+    if reloaded:
+        has_video = check_video_in_article(page, best_idx)
+        media_paths = extract_media_urls_safely(page, best_idx)
+        print(f"  🎥 Video: {has_video}, 🖼 Media: {len(media_paths)} files")
 
-        if check_captcha(page):
-            return
+    print("  🤖 Generating caption...")
+    final_caption = build_final_caption(original_text, has_video=has_video)
+    if len(final_caption) > 250:
+        final_caption = final_caption[:247] + "..."
+    print(f"  ✅ Caption: {final_caption}")
 
-        reply_area = page.wait_for_selector(
-            'div[data-testid="tweetTextarea_0"]', timeout=20000
-        )
-        human_type(reply_area, reply_text)
-        page.wait_for_timeout(random.randint(800, 1500))
-
+    print("\n📤 Posting...")
+    posted = open_compose_and_post(page, final_caption, media_paths)
+    for path in media_paths:
         try:
-            submit = page.wait_for_selector('div[data-testid="tweetButton"]', timeout=10000)
+            os.remove(path)
         except:
-            submit = page.wait_for_selector('button[data-testid="tweetButton"]', timeout=10000)
+            pass
 
-        box = submit.bounding_box()
-        human_mouse_move(page, box['x'] + box['width']//2, box['y'] + box['height']//2)
-        page.wait_for_timeout(random.randint(500, 1200))
-        submit.click()
-        page.wait_for_timeout(4000)
+    if posted:
+        save_to_cache(original_text, POSTED_CACHE)
+        trim_cache(POSTED_CACHE)
+        print("✅ Post successful!")
 
-        save_to_cache(target_text, REPLIED_CACHE)
-        trim_cache(REPLIED_CACHE)
-        print(f"✅ Replied to @{target_source}!")
-
-    except Exception as e:
-        print(f"  ❌ Reply failed: {e}")
+        # Human-like scroll after posting
+        simulate_scroll(page)
+        return True
+    else:
+        print("❌ Post failed.")
+        return False
 
 
 # ──────────────────────────────────────────────
-# MAIN BOT
+# HUMAN DELAY FUNCTION
 # ──────────────────────────────────────────────
 
-def run_bot():
+def human_delay(iteration, hour):
+    """
+    Aggressive but natural posting rhythm for a news aggregator.
+    """
+    if 6 <= hour < 10:
+        base = random.randint(15, 25) * 60
+    elif 10 <= hour < 16:
+        base = random.randint(10, 18) * 60
+    elif 16 <= hour < 22:
+        base = random.randint(15, 25) * 60
+    else:
+        base = random.randint(40, 90) * 60
+
+    if iteration > 40:
+        base = int(base * 1.6)
+    elif iteration > 25:
+        base = int(base * 1.3)
+
+    return base
+
+
+# ──────────────────────────────────────────────
+# MAIN LOOP
+# ──────────────────────────────────────────────
+
+def run_bot_loop():
     if not validate_session():
         return
     if is_captcha_locked():
         return
-    if is_sleeping_time():
-        print("🌙 USA Eastern night (1am-6am). Bot sleeping.")
-        return
 
-    print(f"\n🤖 Bot started — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    MAX_DURATION = 6 * 3600  # 6 hours per runner
+    start_time = time.time()
 
     with sync_playwright() as p:
-        # Use headless=False with Xvfb in CI; locally set HEADLESS=false if needed
         headless = os.environ.get("HEADLESS", "false").lower() == "true"
         browser = p.chromium.launch(headless=headless)
         session_data = load_session()
@@ -878,193 +843,48 @@ def run_bot():
             viewport={'width': 1920, 'height': 1080}
         )
         page = context.new_page()
-        # Activate stealth mode
         stealth_sync(page)
 
-        try:
+        print(f"\n🤖 News Bot started (Post-Only Mode) — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        iteration = 0
+
+        while True:
+            elapsed = time.time() - start_time
+            if elapsed > MAX_DURATION - 300:
+                print("⏰ Approaching 6-hour limit. Exiting loop.")
+                break
+
+            if is_captcha_locked():
+                print("🔒 Captcha lock active. Exiting loop.")
+                break
+
+            # Human siesta every 15-20 posts
+            if iteration > 0 and iteration % random.randint(15, 20) == 0:
+                siesta = random.randint(45, 90) * 60
+                print(f"\n☕ Siesta for {siesta//60} minutes...")
+                time.sleep(siesta)
+                continue
+
+            iteration += 1
+            now = datetime.now()
+            print(f"\n🔄 Post iteration {iteration} — {now.strftime('%H:%M:%S')}")
+
             posted_cache = load_cache(POSTED_CACHE)
-            replied_cache = load_cache(REPLIED_CACHE)
-            candidates = []
 
-            for source in random.sample(SOURCES, len(SOURCES)):
-                print(f"\n📡 @{source} checking...")
+            success = perform_post_only(page, posted_cache)
+            if not success:
+                print("⚠️ Post failed, continuing loop after delay.")
 
-                try:
-                    page.goto(
-                        f"https://x.com/{source}",
-                        wait_until="domcontentloaded",
-                        timeout=60000
-                    )
-                    page.wait_for_timeout(random.randint(5000, 8000))
-                except:
-                    print(f"  ❌ @{source} load failed.")
-                    continue
+            delay = human_delay(iteration, now.hour)
+            print(f"⏳ Next post in {delay//60} minutes...")
+            time.sleep(delay)
 
-                if check_captcha(page):
-                    return
-
-                tweets = page.query_selector_all('article[data-testid="tweet"]')
-                if not tweets:
-                    print(f"  @{source} has no tweets.")
-                    continue
-
-                for i, tweet in enumerate(tweets[:6]):
-                    try:
-                        if is_pinned_tweet(tweet):
-                            print(f"  📌 {i+1} pinned — skip.")
-                            continue
-                        if is_retweet(tweet):
-                            print(f"  🔁 {i+1} retweet — skip.")
-                            continue
-                        if is_thread_continuation(tweet):
-                            print(f"  🧵 {i+1} thread — skip.")
-                            continue
-
-                        text_el = tweet.query_selector('div[data-testid="tweetText"]')
-                        txt = text_el.inner_text() if text_el else ""
-                        if not txt:
-                            continue
-
-                        if is_duplicate(txt, posted_cache):
-                            print(f"  ♻️ {i+1} already posted — skip.")
-                            continue
-                        if is_promotional(txt):
-                            print(f"  🚫 {i+1} promotional — skip.")
-                            continue
-                        if is_too_short(txt):
-                            print(f"  📏 {i+1} too short — skip.")
-                            continue
-
-                        age = get_tweet_age_minutes(tweet)
-                        if age > 180:
-                            print(f"  ⏰ {i+1} {age}m old — skip.")
-                            continue
-
-                        like_btn = tweet.query_selector('button[data-testid="like"]')
-                        likes = parse_count(like_btn.inner_text()) if like_btn else 0
-                        views = get_tweet_view_count(tweet)
-                        sc = score_tweet(txt, likes, views, age)
-
-                        print(f"  ✅ {i+1} | Age:{age}m Likes:{likes} Score:{sc:.1f} | {txt[:60]}...")
-                        candidates.append({
-                            'index': i,
-                            'text': txt,
-                            'source': source,
-                            'likes': likes,
-                            'views': views,
-                            'age_min': age,
-                            'score': sc,
-                        })
-
-                    except Exception as e:
-                        print(f"  ⚠️ tweet {i+1} process error: {e}")
-                        continue
-
-            if not candidates:
-                print("\n⚠️ No new posts. Run finished.")
-                return
-
-            top_candidates = sorted(candidates, key=lambda x: x['likes'], reverse=True)[:5]
-            best_tweet = ai_select_best_tweet(top_candidates)
-
-            if best_tweet is None:
-                best_tweet = max(candidates, key=lambda x: x['score'])
-                print("  🔄 AI fallback: highest score tweet selected.")
-
-            original_text = best_tweet['text']
-            chosen_source = best_tweet['source']
-            best_idx = best_tweet['index']
-            print(f"\n🏆 AI selected: @{chosen_source} | {original_text[:100]}...")
-
-            print(f"\n📡 Reloading @{chosen_source} for media...")
-            reloaded = False
-            try:
-                page.goto(
-                    f"https://x.com/{chosen_source}",
-                    wait_until="domcontentloaded",
-                    timeout=60000
-                )
-                page.wait_for_timeout(random.randint(3000, 5000))
-                reloaded = True
-            except:
-                print("  ⚠️ reload failed.")
-
-            has_video = False
-            media_paths = []
-            if reloaded:
-                has_video = check_video_in_article(page, best_idx)
-                print(f"  🎥 Video: {has_video}")
-                media_paths = extract_media_urls_safely(page, best_idx)
-                print(f"  🖼 Media: {len(media_paths)} files")
-
-            print("  🤖 Generating AI caption...")
-            final_caption = build_final_caption(original_text, has_video=has_video)
-            print(f"  ✅ Final: {final_caption}")
-
-            if len(final_caption) > 250:
-                final_caption = final_caption[:247] + "..."
-
-            print("\n📤 Posting...")
-            posted = open_compose_and_post(page, final_caption, media_paths)
-
-            for path in media_paths:
-                try:
-                    os.remove(path)
-                except:
-                    pass
-
-            if not posted:
-                print("❌ Post failed.")
-                return
-
-            save_to_cache(original_text, POSTED_CACHE)
-            trim_cache(POSTED_CACHE)
-            print("✅ Post successful!")
-
-            wait_sec = random.randint(60, 90)
-            print(f"\n⏳ {wait_sec}s waiting before reply...")
-            time.sleep(wait_sec)
-
-            reply_result = find_best_reply_target(page, replied_cache)
-
-            if not reply_result:
-                print("  ⚠️ No reply target. Skip.")
-                return
-
-            target_tweet, target_url, target_text, target_source = reply_result
-            print(f"  💬 Replying to @{target_source}: {target_text[:80]}...")
-
-            reply_text = ai_call(
-                f"You are a sharp geopolitics commentator on X/Twitter. "
-                f"Someone posted: \"{target_text}\"\n\n"
-                f"Write a smart, insightful human-like reply. Under 220 characters. "
-                f"No hashtags. No markdown. Plain text only. "
-                f"Add value — a fact, a sharp observation, or a strong take. "
-                f"Do NOT start with 'I' or sycophantic phrases. "
-                f"Return only the reply text."
-            )
-            if not reply_text:
-                reply_text = "This changes the geopolitical calculus significantly. A major shift to watch closely."
-
-            if len(reply_text) > 220:
-                reply_text = reply_text[:217] + "..."
-            print(f"  ✅ AI reply: {reply_text}")
-            do_reply(page, target_url, target_tweet, target_text, target_source, reply_text)
-
-        except Exception as e:
-            if "CAPTCHA_DETECTED" in str(e):
-                print("🔒 Captcha lock.")
-            else:
-                print(f"💥 Error: {e}")
-                import traceback
-                traceback.print_exc()
-        finally:
-            browser.close()
-            print("\n🔒 Browser closed.")
+        browser.close()
+        print("\n🔒 Browser closed. Loop ended.")
 
 
 if __name__ == "__main__":
     delay = random.randint(60, 180)
     print(f"⏱ {delay}s initial delay...")
     time.sleep(delay)
-    run_bot()
+    run_bot_loop()
