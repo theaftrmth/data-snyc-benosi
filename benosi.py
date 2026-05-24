@@ -603,7 +603,7 @@ def human_type(element, text):
 
 
 # ──────────────────────────────────────────────
-# POSTING (direct file input only)
+# POSTING (reliable file input, Reddit-bot style)
 # ──────────────────────────────────────────────
 
 def type_and_submit(page, text, media_paths):
@@ -617,37 +617,38 @@ def type_and_submit(page, text, media_paths):
     human_type(textarea, text)
     page.wait_for_timeout(random.randint(800, 1500))
 
+    # Attach media (simple and robust, inspired by your Reddit bot)
     if media_paths:
-        attached = False
-        try:
-            page.wait_for_selector('[data-testid="toolBar"]', timeout=5000)
-        except:
-            pass
-
-        try:
-            file_input = page.wait_for_selector('input[data-testid="fileInput"]', timeout=10000)
-            if file_input:
-                file_input.set_input_files(media_paths)
-                attached = True
-                print(f"  📎 Attached {len(media_paths)} file(s) via direct input.")
-        except Exception as e:
-            print(f"  ⚠️ Could not find file input: {e}")
-
-        if attached:
+        for mp in media_paths:
             try:
-                page.wait_for_selector('[data-testid="attachments"]', timeout=60000)
-                print("  ✅ Media attached successfully.")
-            except:
-                print("  ⚠️ Attachment container did not appear; media may not be attached.")
-            if any(f.lower().endswith('.mp4') for f in media_paths):
-                try:
-                    page.wait_for_selector('[data-testid="videoPlayer"]', timeout=30000)
-                    print("  ✅ Video player ready.")
-                except:
-                    print("  ⚠️ Video player did not appear; video might still be processing.")
-        else:
-            print("  ❌ Media attachment failed, posting text only.")
+                fi = page.query_selector('input[data-testid="fileInput"]')
+                if fi:
+                    fi.set_input_files(mp)
+                    # Wait proportional to file size (video takes longer)
+                    wait_sec = random.randint(4, 7)
+                    if mp.lower().endswith('.mp4'):
+                        file_size = os.path.getsize(mp)
+                        wait_sec = max(8, file_size // (500 * 1024))  # ~500 KB/s
+                        wait_sec = min(wait_sec, 60)  # cap at 60 seconds
+                        print(f"  🎞 Video detected, waiting {wait_sec}s for upload...")
+                    page.wait_for_timeout(int(wait_sec * 1000))
+                    print(f"  📎 Media attached: {os.path.basename(mp)}")
+                else:
+                    # Retry after toolbar load
+                    print(f"  ⚠️  fileInput not found, waiting for toolbar...")
+                    try:
+                        page.wait_for_selector('[data-testid="toolBar"]', timeout=5000)
+                        fi = page.query_selector('input[data-testid="fileInput"]')
+                        if fi:
+                            fi.set_input_files(mp)
+                            page.wait_for_timeout(random.randint(4000, 7000))
+                            print(f"  📎 Media attached on retry.")
+                    except:
+                        print(f"  ❌ Could not attach media.")
+            except Exception as e:
+                print(f"  ⚠️  Media attach error: {e}")
 
+    # Click post button
     try:
         btn = page.wait_for_selector('div[data-testid="tweetButtonInline"]', timeout=8000)
     except:
