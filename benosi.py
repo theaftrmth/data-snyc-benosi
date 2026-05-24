@@ -361,8 +361,8 @@ def download_video_with_ytdlp(tweet_url):
                 print("  ⚠️ Downloaded file is 0 bytes, skipping.")
                 os.remove(out_path)
                 return None
-            if size > 50 * 1024 * 1024:
-                print("  ⚠️ Video too large (50MB+), skip.")
+            if size > 100 * 1024 * 1024:   # 100 MB limit
+                print("  ⚠️ Video too large (100MB+), skip.")
                 os.remove(out_path)
                 return None
             return out_path
@@ -450,6 +450,7 @@ def ai_select_best_tweet(tweet_list):
             })
         prompt = f"""You are a sharp geopolitical news editor for X/Twitter.
 Below are tweets from breaking news sources. Pick the ONE tweet that is the most newsworthy, urgent, and likely to get high engagement.
+**Avoid tweets that are primarily opinion, editorializing, or advocacy.** Prefer strictly factual, neutral reporting.
 Consider:
 - Global impact, surprise, conflict, diplomatic moves.
 - Uniqueness (not just a reaction).
@@ -508,20 +509,35 @@ def _fix_double_colon(caption):
     return caption
 
 
+def _trim_no_ellipsis(caption: str, max_chars=217) -> str:
+    """শেষ পূর্ণ শব্দ পর্যন্ত রেখে অতিরিক্ত কেটে ফেলে; কোনো '...' যোগ করে না"""
+    if len(caption) <= max_chars:
+        return caption
+    portion = caption[:max_chars]
+    last_space = portion.rfind(' ')
+    if last_space > 0:
+        return portion[:last_space]
+    return portion  # একটিও স্পেস না থাকলে যা আছে তাই
+
+
 def build_final_caption(original_text, has_video=False):
     prompt = f"""You are a sharp breaking news editor on X/Twitter.
 
 Task: Rewrite the tweet below, then choose the best label.
 
 RULES FOR REWRITING:
-- Keep the same meaning, make it punchy and urgent
-- **Maximum 220 characters total**
-- No hashtags, no markdown, no asterisks, no bold
-- Preserve direct quotes word for word
-- Avoid double colon (wrong: "Trump: says...", correct: "Trump says...")
-- Do NOT start the rewritten text with BREAKING, DEVELOPING, WATCH, or INTERESTING
-- When mentioning official positions, use the full formal title (e.g., "Federal Reserve Chair" not just "Chair")
-- Paraphrase the tweet naturally in simple and easy words without changing its meaning. Sound like a real human, not a news bot.
+- **Your ENTIRE rewritten text must be 220 characters or fewer. Do NOT exceed this limit.**
+- **Do NOT use '...' or any truncation markers. Your output must be a complete, self-contained sentence.**
+- If the original is too long, pick ONLY the single most important fact and express it fully.
+- Keep the same meaning, make it punchy and urgent.
+- No hashtags, no markdown, no asterisks, no bold.
+- Preserve direct quotes word for word.
+- Avoid double colon (wrong: "Trump: says...", correct: "Trump says...").
+- Do NOT start the rewritten text with BREAKING, DEVELOPING, WATCH, or INTERESTING.
+- When mentioning official positions, use the full formal title (e.g., "Federal Reserve Chair" not just "Chair").
+- Maintain a strictly neutral, factual tone. Do not take sides.
+- Avoid any language that labels a group as "terrorist", "freedom fighter", "militant" etc. unless it's a direct quote from an official.
+- Paraphrase naturally in simple words. Sound like a real human, not a news bot.
 
 RULES FOR LABEL:
 - BREAKING → urgent news, military action, major political event (DEFAULT)
@@ -545,34 +561,42 @@ Tweet:
 
     result = ai_call(prompt)
 
-    if not result or "|" not in result:
-        print("  ⚠️ AI format failed, fallback...")
-        label = _fallback_label(original_text, has_video)
-        caption = clean_text(original_text[:220])
+    if result:
+        if "|" in result:
+            parts = result.split("|", 1)
+            label = parts[0].strip().upper()
+            caption = parts[1].strip() if len(parts) > 1 else ""
+        else:
+            label = ""
+            caption = result.strip()
+
+        caption = re.sub(
+            r'^(BREAKING|DEVELOPING|WATCH|INTERESTING)\s*(says|:|\|)?\s*',
+            '', caption, flags=re.IGNORECASE
+        ).strip()
+
+        if label not in {"BREAKING", "DEVELOPING", "WATCH", "INTERESTING"}:
+            label = _fallback_label(original_text, has_video)
+        if label == "WATCH" and not has_video:
+            label = "BREAKING"
+
+        if not caption:
+            caption = clean_text(original_text[:220])
+
+        caption = _fix_double_colon(caption)
+        caption = _trim_no_ellipsis(caption, max_chars=217)
         return f"{_label_emoji(label)} {label} | {caption}"
 
-    parts = result.split("|", 1)
-    label = parts[0].strip().upper()
-    caption = parts[1].strip() if len(parts) > 1 else ""
-
-    if label not in {"BREAKING", "DEVELOPING", "WATCH", "INTERESTING"}:
-        label = _fallback_label(original_text, has_video)
-
-    if label == "WATCH" and not has_video:
-        label = "BREAKING"
-
-    if not caption:
-        caption = clean_text(original_text[:220])
-
+    # Fallback
+    print("  ⚠️ AI format failed, using fallback...")
+    label = _fallback_label(original_text, has_video)
     caption = re.sub(
         r'^(BREAKING|DEVELOPING|WATCH|INTERESTING)\s*(says|:|\|)?\s*',
-        '', caption, flags=re.IGNORECASE
+        '', original_text, flags=re.IGNORECASE
     ).strip()
-
+    caption = clean_text(caption[:220])
     caption = _fix_double_colon(caption)
-
-    if len(caption) > 217:
-        caption = caption[:217] + "..."
+    caption = _trim_no_ellipsis(caption, max_chars=217)
     return f"{_label_emoji(label)} {label} | {caption}"
 
 
@@ -629,7 +653,7 @@ def type_and_submit(page, text, media_paths):
                     if mp.lower().endswith('.mp4'):
                         file_size = os.path.getsize(mp)
                         wait_sec = max(8, file_size // (500 * 1024))  # ~500 KB/s
-                        wait_sec = min(wait_sec, 60)  # cap at 60 seconds
+                        wait_sec = min(wait_sec, 120)  # cap at 120 seconds
                         print(f"  🎞 Video detected, waiting {wait_sec}s for upload...")
                     page.wait_for_timeout(int(wait_sec * 1000))
                     print(f"  📎 Media attached: {os.path.basename(mp)}")
@@ -873,35 +897,35 @@ def run_bot_loop():
         while True:
             elapsed = time.time() - start_time
             if elapsed > MAX_DURATION - 300:
-                print("⏰ Approaching 6-hour limit. Exiting loop.")
+                print("⏰ Approaching 6-hour limit. Exiting loop.", flush=True)
                 break
 
             if is_captcha_locked():
-                print("🔒 Captcha lock active. Exiting loop.")
+                print("🔒 Captcha lock active. Exiting loop.", flush=True)
                 break
 
             if iteration > 0 and iteration % SIESTA_EVERY == 0:
                 siesta = random.randint(45, 90) * 60
-                print(f"\n☕ Siesta for {siesta//60} minutes...")
+                print(f"\n☕ Siesta for {siesta//60} minutes...", flush=True)
                 time.sleep(siesta)
                 continue
 
             iteration += 1
             now = datetime.now()
-            print(f"\n🔄 Post iteration {iteration} — {now.strftime('%H:%M:%S')}")
+            print(f"\n🔄 Post iteration {iteration} — {now.strftime('%H:%M:%S')}", flush=True)
 
             posted_cache = load_cache(POSTED_CACHE)
 
             success = perform_post_only(page, posted_cache)
             if not success:
-                print("⚠️ Post failed, continuing loop after delay.")
+                print("⚠️ Post failed, continuing loop after delay.", flush=True)
 
             delay = human_delay(iteration, now.hour)
-            print(f"⏳ Next post in {delay//60} minutes...")
+            print(f"⏳ Next post in {delay//60} minutes...", flush=True)
             time.sleep(delay)
 
         browser.close()
-        print("\n🔒 Browser closed. Loop ended.")
+        print("\n🔒 Browser closed. Loop ended.", flush=True)
 
 
 if __name__ == "__main__":
