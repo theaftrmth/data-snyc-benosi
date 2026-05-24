@@ -357,6 +357,10 @@ def download_video_with_ytdlp(tweet_url):
         if result.returncode == 0 and os.path.exists(out_path):
             size = os.path.getsize(out_path)
             print(f"  📥 Video downloaded: {size // 1024}KB")
+            if size == 0:
+                print("  ⚠️ Downloaded file is 0 bytes, skipping.")
+                os.remove(out_path)
+                return None
             if size > 50 * 1024 * 1024:
                 print("  ⚠️ Video too large (50MB+), skip.")
                 os.remove(out_path)
@@ -613,16 +617,43 @@ def type_and_submit(page, text, media_paths):
     human_type(textarea, text)
     page.wait_for_timeout(random.randint(800, 1500))
 
-    for mp in media_paths:
+    if media_paths:
         try:
-            file_input = page.query_selector('input[data-testid="fileInput"]')
-            if file_input:
-                file_input.set_input_files(mp)
-                page.wait_for_timeout(random.randint(2000, 4000))
-                human_mouse_move(page, viewport['width']//2, viewport['height']//2)
-        except:
-            pass
-
+            # "Add media" বাটনে ক্লিক করব
+            add_media_btn = page.wait_for_selector(
+                'button[aria-label="Add media"], [data-testid="mediaButton"]',
+                timeout=10000
+            )
+            box = add_media_btn.bounding_box()
+            human_mouse_move(page, box['x'] + box['width']//2, box['y'] + box['height']//2)
+            
+            # ফাইল চুজারের জন্য অপেক্ষা
+            with page.expect_file_chooser() as fc_info:
+                add_media_btn.click()
+            file_chooser = fc_info.value
+            file_chooser.set_files(media_paths)
+            
+            print(f"  📎 Attached {len(media_paths)} file(s) via file chooser.")
+            
+            # আপলোড শেষ হওয়ার প্রমাণ: attachment container
+            try:
+                page.wait_for_selector('[data-testid="attachments"]', timeout=60000)
+                print("  ✅ Media attached successfully.")
+            except:
+                print("  ⚠️ Attachment container did not appear; media may not be attached.")
+            
+            # ভিডিওর জন্য বাড়তি নিশ্চিতকরণ (ভিডিও প্লেয়ার)
+            if any(f.lower().endswith('.mp4') for f in media_paths):
+                try:
+                    page.wait_for_selector('[data-testid="videoPlayer"]', timeout=30000)
+                    print("  ✅ Video player ready.")
+                except:
+                    print("  ⚠️ Video player did not appear; video might still be processing.")
+            
+        except Exception as e:
+            print(f"  ⚠️ Media attachment failed: {e}")
+    
+    # পোস্ট বাটনে ক্লিক
     try:
         btn = page.wait_for_selector('div[data-testid="tweetButtonInline"]', timeout=8000)
     except:
@@ -679,7 +710,6 @@ def simulate_scroll(page):
     try:
         page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(random.randint(2000, 3000))
-        # Scroll a few times with random pauses
         for _ in range(random.randint(2, 5)):
             page.mouse.wheel(0, random.randint(300, 800))
             time.sleep(random.uniform(0.5, 1.5))
