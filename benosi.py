@@ -603,7 +603,7 @@ def human_type(element, text):
 
 
 # ──────────────────────────────────────────────
-# POSTING WITH MOUSE MOVEMENTS
+# POSTING (direct file input only)
 # ──────────────────────────────────────────────
 
 def type_and_submit(page, text, media_paths):
@@ -618,42 +618,36 @@ def type_and_submit(page, text, media_paths):
     page.wait_for_timeout(random.randint(800, 1500))
 
     if media_paths:
+        attached = False
         try:
-            # "Add media" বাটনে ক্লিক করব
-            add_media_btn = page.wait_for_selector(
-                'button[aria-label="Add media"], [data-testid="mediaButton"]',
-                timeout=10000
-            )
-            box = add_media_btn.bounding_box()
-            human_mouse_move(page, box['x'] + box['width']//2, box['y'] + box['height']//2)
-            
-            # ফাইল চুজারের জন্য অপেক্ষা
-            with page.expect_file_chooser() as fc_info:
-                add_media_btn.click()
-            file_chooser = fc_info.value
-            file_chooser.set_files(media_paths)
-            
-            print(f"  📎 Attached {len(media_paths)} file(s) via file chooser.")
-            
-            # আপলোড শেষ হওয়ার প্রমাণ: attachment container
+            page.wait_for_selector('[data-testid="toolBar"]', timeout=5000)
+        except:
+            pass
+
+        try:
+            file_input = page.wait_for_selector('input[data-testid="fileInput"]', timeout=10000)
+            if file_input:
+                file_input.set_input_files(media_paths)
+                attached = True
+                print(f"  📎 Attached {len(media_paths)} file(s) via direct input.")
+        except Exception as e:
+            print(f"  ⚠️ Could not find file input: {e}")
+
+        if attached:
             try:
                 page.wait_for_selector('[data-testid="attachments"]', timeout=60000)
                 print("  ✅ Media attached successfully.")
             except:
                 print("  ⚠️ Attachment container did not appear; media may not be attached.")
-            
-            # ভিডিওর জন্য বাড়তি নিশ্চিতকরণ (ভিডিও প্লেয়ার)
             if any(f.lower().endswith('.mp4') for f in media_paths):
                 try:
                     page.wait_for_selector('[data-testid="videoPlayer"]', timeout=30000)
                     print("  ✅ Video player ready.")
                 except:
                     print("  ⚠️ Video player did not appear; video might still be processing.")
-            
-        except Exception as e:
-            print(f"  ⚠️ Media attachment failed: {e}")
-    
-    # পোস্ট বাটনে ক্লিক
+        else:
+            print("  ❌ Media attachment failed, posting text only.")
+
     try:
         btn = page.wait_for_selector('div[data-testid="tweetButtonInline"]', timeout=8000)
     except:
@@ -813,7 +807,6 @@ def perform_post_only(page, posted_cache):
         trim_cache(POSTED_CACHE)
         print("✅ Post successful!")
 
-        # Human-like scroll after posting
         simulate_scroll(page)
         return True
     else:
@@ -826,9 +819,6 @@ def perform_post_only(page, posted_cache):
 # ──────────────────────────────────────────────
 
 def human_delay(iteration, hour):
-    """
-    Aggressive but natural posting rhythm for a news aggregator.
-    """
     if 6 <= hour < 10:
         base = random.randint(15, 25) * 60
     elif 10 <= hour < 16:
@@ -856,7 +846,7 @@ def run_bot_loop():
     if is_captcha_locked():
         return
 
-    MAX_DURATION = 6 * 3600  # 6 hours per runner
+    MAX_DURATION = 6 * 3600
     start_time = time.time()
 
     with sync_playwright() as p:
@@ -877,6 +867,7 @@ def run_bot_loop():
 
         print(f"\n🤖 News Bot started (Post-Only Mode) — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         iteration = 0
+        SIESTA_EVERY = random.randint(15, 20)
 
         while True:
             elapsed = time.time() - start_time
@@ -888,8 +879,7 @@ def run_bot_loop():
                 print("🔒 Captcha lock active. Exiting loop.")
                 break
 
-            # Human siesta every 15-20 posts
-            if iteration > 0 and iteration % random.randint(15, 20) == 0:
+            if iteration > 0 and iteration % SIESTA_EVERY == 0:
                 siesta = random.randint(45, 90) * 60
                 print(f"\n☕ Siesta for {siesta//60} minutes...")
                 time.sleep(siesta)
