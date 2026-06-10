@@ -10,7 +10,6 @@ import math
 from datetime import datetime, timezone
 import pytz
 from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync
 import g4f
 
 # ──────────────────────────────────────────────
@@ -35,8 +34,39 @@ MEDIA_DIR = "downloaded_media"
 POSTED_CACHE = "posted_cache.txt"
 REPLIED_CACHE = "replied_cache.txt"
 CAPTCHA_LOCK_FILE = "captcha_lock.txt"
+DAILY_LIMIT_FILE = "daily_post_limit.json"
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
+# ──────────────────────────────────────────────
+# DAILY POST LIMIT
+# ──────────────────────────────────────────────
+def get_daily_limit():
+    """Returns (target_limit, current_count) and ensures a fresh target for a new day."""
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if os.path.exists(DAILY_LIMIT_FILE):
+        try:
+            with open(DAILY_LIMIT_FILE, "r") as f:
+                data = json.load(f)
+            if data.get("date") == today_str:
+                return data["target"], data["count"]
+        except:
+            pass
+    # নতুন দিন বা ফাইল নেই
+    target = random.randint(35, 55)
+    data = {"date": today_str, "target": target, "count": 0}
+    with open(DAILY_LIMIT_FILE, "w") as f:
+        json.dump(data, f)
+    print(f"📊 New daily post target: {target}")
+    return target, 0
+
+def increment_daily_counter():
+    target, count = get_daily_limit()
+    count += 1
+    data = {"date": datetime.now(timezone.utc).strftime("%Y-%m-%d"), "target": target, "count": count}
+    with open(DAILY_LIMIT_FILE, "w") as f:
+        json.dump(data, f)
+    print(f"📈 Daily count: {count}/{target}")
+    return count >= target
 
 # ──────────────────────────────────────────────
 # SESSION MANAGEMENT (env SESSION_JSON)
@@ -510,14 +540,13 @@ def _fix_double_colon(caption):
 
 
 def _trim_no_ellipsis(caption: str, max_chars=217) -> str:
-    """শেষ পূর্ণ শব্দ পর্যন্ত রেখে অতিরিক্ত কেটে ফেলে; কোনো '...' যোগ করে না"""
     if len(caption) <= max_chars:
         return caption
     portion = caption[:max_chars]
     last_space = portion.rfind(' ')
     if last_space > 0:
         return portion[:last_space]
-    return portion  # একটিও স্পেস না থাকলে যা আছে তাই
+    return portion
 
 
 def build_final_caption(original_text, has_video=False):
@@ -587,7 +616,6 @@ Tweet:
         caption = _trim_no_ellipsis(caption, max_chars=217)
         return f"{_label_emoji(label)} {label} | {caption}"
 
-    # Fallback
     print("  ⚠️ AI format failed, using fallback...")
     label = _fallback_label(original_text, has_video)
     caption = re.sub(
@@ -627,7 +655,7 @@ def human_type(element, text):
 
 
 # ──────────────────────────────────────────────
-# POSTING (reliable file input, Reddit-bot style)
+# POSTING (fixed: manual stealth, correct video selector)
 # ──────────────────────────────────────────────
 
 def type_and_submit(page, text, media_paths):
@@ -641,24 +669,23 @@ def type_and_submit(page, text, media_paths):
     human_type(textarea, text)
     page.wait_for_timeout(random.randint(800, 1500))
 
-    # Attach media (simple and robust, inspired by your Reddit bot)
     if media_paths:
+        has_video = False
         for mp in media_paths:
             try:
                 fi = page.query_selector('input[data-testid="fileInput"]')
                 if fi:
                     fi.set_input_files(mp)
-                    # Wait proportional to file size (video takes longer)
                     wait_sec = random.randint(4, 7)
                     if mp.lower().endswith('.mp4'):
                         file_size = os.path.getsize(mp)
-                        wait_sec = max(8, file_size // (500 * 1024))  # ~500 KB/s
-                        wait_sec = min(wait_sec, 120)  # cap at 120 seconds
+                        wait_sec = max(8, file_size // (500 * 1024))
+                        wait_sec = min(wait_sec, 120)
                         print(f"  🎞 Video detected, waiting {wait_sec}s for upload...")
+                        has_video = True
                     page.wait_for_timeout(int(wait_sec * 1000))
                     print(f"  📎 Media attached: {os.path.basename(mp)}")
                 else:
-                    # Retry after toolbar load
                     print(f"  ⚠️  fileInput not found, waiting for toolbar...")
                     try:
                         page.wait_for_selector('[data-testid="toolBar"]', timeout=5000)
@@ -672,7 +699,18 @@ def type_and_submit(page, text, media_paths):
             except Exception as e:
                 print(f"  ⚠️  Media attach error: {e}")
 
-    # Click post button
+        if has_video:
+            try:
+                page.wait_for_selector(
+                    '[data-testid="attachments"] video, '
+                    '[data-testid="tweetComposer"] video',
+                    timeout=60000
+                )
+                print("  ✅ Video preview ready.")
+            except:
+                print("  ⚠️ Video preview timeout, posting anyway.")
+            page.wait_for_timeout(3000)
+
     try:
         btn = page.wait_for_selector('div[data-testid="tweetButtonInline"]', timeout=8000)
     except:
@@ -796,7 +834,6 @@ def perform_post_only(page, posted_cache):
     best_idx = best_tweet['index']
     print(f"\n🏆 Selected: @{chosen_source} | {original_text[:100]}...")
 
-    # Reload for media
     print(f"\n📡 Reloading @{chosen_source} for media...")
     reloaded = False
     try:
@@ -832,7 +869,10 @@ def perform_post_only(page, posted_cache):
         trim_cache(POSTED_CACHE)
         print("✅ Post successful!")
 
+        limit_reached = increment_daily_counter()
         simulate_scroll(page)
+        if limit_reached:
+            print(f"🎯 Daily post limit reached. Stopping further posts today.")
         return True
     else:
         print("❌ Post failed.")
@@ -862,13 +902,19 @@ def human_delay(iteration, hour):
 
 
 # ──────────────────────────────────────────────
-# MAIN LOOP
+# MAIN LOOP (fixed UA & viewport, manual stealth, daily limit)
 # ──────────────────────────────────────────────
 
 def run_bot_loop():
     if not validate_session():
         return
     if is_captcha_locked():
+        return
+
+    target, current = get_daily_limit()
+    print(f"📊 Daily limit: {current}/{target}")
+    if current >= target:
+        print("🎯 Today's post limit already reached. Exiting.")
         return
 
     MAX_DURATION = 6 * 3600
@@ -883,18 +929,29 @@ def run_bot_loop():
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/123.0.0.0 Safari/537.36"
+                "Chrome/136.0.0.0 Safari/537.36"
             ),
             viewport={'width': 1920, 'height': 1080}
         )
         page = context.new_page()
-        stealth_sync(page)
+
+        # ম্যানুয়াল স্টিলথ
+        page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+            window.chrome = {runtime: {}};
+        """)
 
         print(f"\n🤖 News Bot started (Post-Only Mode) — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         iteration = 0
         SIESTA_EVERY = random.randint(15, 20)
 
         while True:
+            target, current = get_daily_limit()
+            if current >= target:
+                print("🎯 Daily limit reached. Stopping.")
+                break
+
             elapsed = time.time() - start_time
             if elapsed > MAX_DURATION - 300:
                 print("⏰ Approaching 6-hour limit. Exiting loop.", flush=True)
