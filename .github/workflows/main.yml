@@ -47,7 +47,7 @@ jobs:
           SESSION_JSON: ${{ secrets.SESSION_JSON }}
           SOURCES: ${{ secrets.SOURCES }}
           HEADLESS: false
-        run: xvfb-run python bot.py
+        run: xvfb-run python benosi.py
 
       - name: Save bot cache
         if: always()
