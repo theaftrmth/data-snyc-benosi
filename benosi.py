@@ -132,13 +132,18 @@ def check_captcha(page):
     """
     Returns True if a captcha/challenge is detected (and locks the bot).
     Takes a screenshot for debugging.
+    Fixed: removed div[class*="captcha"] to prevent false positives from
+    X's "Get Verified" popup and other internal elements.
     """
     try:
+        # Only match specific, unambiguous captcha elements (NOT div[class*="captcha"] — too broad)
         captcha = page.query_selector(
-            'iframe[src*="captcha"], div[data-testid="captcha"], '
-            '#captcha, div[class*="captcha"], iframe[title*="captcha"]'
+            'iframe[src*="captcha"], '
+            'div[data-testid="captcha"], '
+            '#captcha, '
+            'iframe[title*="captcha"]'
         )
-        if captcha:
+        if captcha and captcha.is_visible():
             print("  ⚠️ CAPTCHA element detected!")
             page.screenshot(path=f"captcha_debug_elem_{int(time.time())}.png")
             set_captcha_lock()
@@ -146,21 +151,25 @@ def check_captcha(page):
     except:
         pass
 
-    # Check body text for challenge phrases
+    # Check body text AND URL together to avoid false positives
     try:
         page_text = page.inner_text('body').lower()
         if any(phrase in page_text for phrase in [
             "verify your identity", "are you human", "unusual activity",
             "prove you're not a bot", "security challenge", "complete the challenge"
         ]):
-            print("  ⚠️ Challenge text found on page!")
-            page.screenshot(path=f"captcha_debug_text_{int(time.time())}.png")
-            set_captcha_lock()
-            return True
+            current_url = page.url.lower()
+            if "challenge" in current_url or "captcha" in current_url or "suspended" in current_url:
+                print("  ⚠️ Challenge text + suspicious URL detected!")
+                page.screenshot(path=f"captcha_debug_text_{int(time.time())}.png")
+                set_captcha_lock()
+                return True
+            else:
+                print("  ℹ️ Challenge phrase found but URL looks normal — skipping lock.")
     except:
         pass
 
-    # Check URL
+    # Check URL only
     current_url = page.url.lower()
     if "challenge" in current_url or "captcha" in current_url:
         print("  ⚠️ Challenge/Captcha URL detected!")
