@@ -48,7 +48,7 @@ jobs:
           SOURCES: ${{ secrets.SOURCES }}
           HEADLESS: false
           PYTHONUNBUFFERED: 1
-        run: xvfb-run python bot.py
+        run: xvfb-run python benosi.py
 
       - name: Save bot cache
         if: always()
