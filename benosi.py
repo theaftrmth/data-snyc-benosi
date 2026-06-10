@@ -732,16 +732,51 @@ def type_and_submit(page, text, media_paths):
                 print(f"  ⚠️  Media attach error: {e}")
 
         if has_video:
+            # Step 1: Wait for attachment container to appear
+            attached = False
             try:
                 page.wait_for_selector(
-                    '[data-testid="attachments"] video, '
-                    '[data-testid="tweetComposer"] video',
-                    timeout=60000
+                    '[data-testid="attachments"]',
+                    timeout=20000
                 )
-                print("  ✅ Video preview ready.")
+                attached = True
+                print("  ✅ Attachment container found.")
             except:
-                print("  ⚠️ Video preview timeout, posting anyway.")
-            page.wait_for_timeout(3000)
+                print("  ⚠️ Attachment container not found.")
+
+            if attached:
+                # Step 2: Wait for upload progress bar to disappear (upload complete)
+                try:
+                    page.wait_for_selector(
+                        '[data-testid="attachments"] [role="progressbar"]',
+                        timeout=5000
+                    )
+                    page.wait_for_selector(
+                        '[data-testid="attachments"] [role="progressbar"]',
+                        state="hidden",
+                        timeout=90000
+                    )
+                    print("  ✅ Upload progress complete.")
+                except:
+                    pass  # No progress bar shown, or already done
+
+                # Step 3: Verify video element OR any media thumbnail present
+                try:
+                    page.wait_for_selector(
+                        '[data-testid="attachments"] video, '
+                        '[data-testid="attachments"] img, '
+                        '[data-testid="tweetComposer"] video',
+                        timeout=30000
+                    )
+                    print("  ✅ Video/media preview ready.")
+                except:
+                    print("  ⚠️ Preview element not found — waiting extra 10s before posting.")
+                    page.wait_for_timeout(10000)
+            else:
+                print("  ⚠️ Media may not have attached — waiting 15s before posting.")
+                page.wait_for_timeout(15000)
+
+            page.wait_for_timeout(2000)
 
     try:
         btn = page.wait_for_selector('div[data-testid="tweetButtonInline"]', timeout=8000)
@@ -984,18 +1019,8 @@ def run_bot_loop():
                 return getParameter.call(this, parameter);
             };
 
-            const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
-            HTMLCanvasElement.prototype.toDataURL = function(type) {
-                const context = this.getContext('2d');
-                if (context) {
-                    const imageData = context.getImageData(0, 0, this.width, this.height);
-                    for (let i = 0; i < imageData.data.length; i += 4) {
-                        imageData.data[i] ^= 1;
-                    }
-                    context.putImageData(imageData, 0, 0);
-                }
-                return originalToDataURL.apply(this, arguments);
-            };
+            // Canvas toDataURL modification REMOVED — it broke X's video thumbnail
+            // generation in the compose box, causing videos to be dropped silently.
 
             const originalCreateOscillator = AudioContext.prototype.createOscillator;
             AudioContext.prototype.createOscillator = function() {
