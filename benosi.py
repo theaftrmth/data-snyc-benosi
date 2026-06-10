@@ -701,80 +701,49 @@ def type_and_submit(page, text, media_paths):
     human_type(textarea, text)
     page.wait_for_timeout(random.randint(800, 1500))
 
+    has_video = False
     if media_paths:
-        has_video = False
         for mp in media_paths:
             try:
-                fi = page.query_selector('input[data-testid="fileInput"]')
+                # wait_for_selector — query_selector এর মতো immediately return করে না
+                fi = page.wait_for_selector(
+                    'input[data-testid="fileInput"]',
+                    state="attached",
+                    timeout=10000
+                )
                 if fi:
                     fi.set_input_files(mp)
                     if mp.lower().endswith('.mp4'):
                         has_video = True
                         print(f"  🎞 Video file queued: {os.path.basename(mp)}")
+                        page.wait_for_timeout(random.randint(4000, 7000))
                     else:
                         print(f"  📎 Image queued: {os.path.basename(mp)}")
+                        page.wait_for_timeout(random.randint(3500, 6000))
                 else:
                     print(f"  ⚠️ fileInput not found.")
             except Exception as e:
                 print(f"  ⚠️ Media attach error: {e}")
+        page.wait_for_timeout(1000)
 
-        if has_video:
-            # React-কে file register করে upload UI দেখানোর সময় দাও
-            page.wait_for_timeout(3000)
-
-            attached = False
-            try:
-                page.wait_for_selector(
-                    '[data-testid="attachments"]',
-                    timeout=120000  # 60s → 120s (upload শেষ হলে তবেই container আসে)
-                )
-                attached = True
-                print("  ✅ Attachment container found.")
-            except:
-                print("  ⚠️ Attachment container not found.")
-                page.screenshot(path=f"attach_fail_{int(time.time())}.png")
-
-            if attached:
-                # Upload progress bar শেষ হওয়া পর্যন্ত অপেক্ষা
-                try:
-                    page.wait_for_selector(
-                        '[data-testid="attachments"] [role="progressbar"]',
-                        timeout=8000
-                    )
-                    page.wait_for_selector(
-                        '[data-testid="attachments"] [role="progressbar"]',
-                        state="hidden",
-                        timeout=120000
-                    )
-                    print("  ✅ Upload complete.")
-                except:
-                    # Progress bar না আসলে একটু অপেক্ষা করো
-                    page.wait_for_timeout(5000)
-
-                # Video/image preview confirm
-                try:
-                    page.wait_for_selector(
-                        '[data-testid="attachments"] video, '
-                        '[data-testid="attachments"] img',
-                        timeout=15000
-                    )
-                    print("  ✅ Media preview confirmed.")
-                except:
-                    print("  ⚠️ Preview not confirmed, continuing anyway.")
-
-            else:
-                print("  ⚠️ Skipping media, posting text only.")
-
-            page.wait_for_timeout(2000)
-
-        else:
-            # Image হলে ছোট wait
-            page.wait_for_timeout(random.randint(3000, 5000))
-
+    # Submit button — video upload চলাকালে X এটা disabled রাখে
+    # is_enabled() True হওয়া মানে upload শেষ → তখনই click করা যাবে
+    btn_timeout = 90000 if has_video else 12000
     try:
-        btn = page.wait_for_selector('div[data-testid="tweetButtonInline"]', timeout=8000)
+        btn = page.wait_for_selector('div[data-testid="tweetButtonInline"]', timeout=btn_timeout)
     except:
         btn = page.wait_for_selector('button[data-testid="tweetButton"]', timeout=8000)
+
+    # Enabled হওয়া পর্যন্ত wait (video upload signal)
+    deadline = time.time() + (90 if has_video else 12)
+    while time.time() < deadline:
+        try:
+            if btn.is_enabled():
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+
     box = btn.bounding_box()
     human_mouse_move(page, box['x'] + box['width']//2, box['y'] + box['height']//2)
     page.wait_for_timeout(random.randint(500, 1200))
