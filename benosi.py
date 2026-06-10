@@ -719,12 +719,14 @@ def type_and_submit(page, text, media_paths):
                 print(f"  ⚠️ Media attach error: {e}")
 
         if has_video:
-            # set_input_files এর পরেই সরাসরি attachments container খোঁজো
+            # React-কে file register করে upload UI দেখানোর সময় দাও
+            page.wait_for_timeout(3000)
+
             attached = False
             try:
                 page.wait_for_selector(
                     '[data-testid="attachments"]',
-                    timeout=60000  # 20s → 60s
+                    timeout=120000  # 60s → 120s (upload শেষ হলে তবেই container আসে)
                 )
                 attached = True
                 print("  ✅ Attachment container found.")
