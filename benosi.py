@@ -51,7 +51,6 @@ def get_daily_limit():
                 return data["target"], data["count"]
         except:
             pass
-    # নতুন দিন বা ফাইল নেই
     target = random.randint(35, 55)
     data = {"date": today_str, "target": target, "count": 0}
     with open(DAILY_LIMIT_FILE, "w") as f:
@@ -103,7 +102,7 @@ def validate_session():
 
 
 # ──────────────────────────────────────────────
-# CAPTCHA LOCK
+# CAPTCHA LOCK (with screenshot)
 # ──────────────────────────────────────────────
 
 def is_captcha_locked():
@@ -130,21 +129,45 @@ def set_captcha_lock():
 
 
 def check_captcha(page):
+    """
+    Returns True if a captcha/challenge is detected (and locks the bot).
+    Takes a screenshot for debugging.
+    """
     try:
         captcha = page.query_selector(
             'iframe[src*="captcha"], div[data-testid="captcha"], '
             '#captcha, div[class*="captcha"], iframe[title*="captcha"]'
         )
         if captcha:
-            print("  ⚠️ CAPTCHA detected!")
-            set_captcha_lock()
-            return True
-        if "challenge" in page.url.lower() or "captcha" in page.url.lower():
-            print("  ⚠️ Challenge URL!")
+            print("  ⚠️ CAPTCHA element detected!")
+            page.screenshot(path=f"captcha_debug_elem_{int(time.time())}.png")
             set_captcha_lock()
             return True
     except:
         pass
+
+    # Check body text for challenge phrases
+    try:
+        page_text = page.inner_text('body').lower()
+        if any(phrase in page_text for phrase in [
+            "verify your identity", "are you human", "unusual activity",
+            "prove you're not a bot", "security challenge", "complete the challenge"
+        ]):
+            print("  ⚠️ Challenge text found on page!")
+            page.screenshot(path=f"captcha_debug_text_{int(time.time())}.png")
+            set_captcha_lock()
+            return True
+    except:
+        pass
+
+    # Check URL
+    current_url = page.url.lower()
+    if "challenge" in current_url or "captcha" in current_url:
+        print("  ⚠️ Challenge/Captcha URL detected!")
+        page.screenshot(path=f"captcha_debug_url_{int(time.time())}.png")
+        set_captcha_lock()
+        return True
+
     return False
 
 
@@ -902,7 +925,7 @@ def human_delay(iteration, hour):
 
 
 # ──────────────────────────────────────────────
-# MAIN LOOP (fixed UA & viewport, manual stealth, daily limit)
+# MAIN LOOP (manual stealth, full fingerprint)
 # ──────────────────────────────────────────────
 
 def run_bot_loop():
@@ -935,11 +958,52 @@ def run_bot_loop():
         )
         page = context.new_page()
 
-        # ম্যানুয়াল স্টিলথ
+        # পূর্ণাঙ্গ ফিঙ্গারপ্রিন্ট স্পুফিং
         page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
-            window.chrome = {runtime: {}};
+            window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}, app: {}};
+            Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+            Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+            Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+
+            const getParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                if (parameter === 37445) return 'Google Inc. (Intel)';
+                if (parameter === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+                return getParameter.call(this, parameter);
+            };
+
+            const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+            HTMLCanvasElement.prototype.toDataURL = function(type) {
+                const context = this.getContext('2d');
+                if (context) {
+                    const imageData = context.getImageData(0, 0, this.width, this.height);
+                    for (let i = 0; i < imageData.data.length; i += 4) {
+                        imageData.data[i] ^= 1;
+                    }
+                    context.putImageData(imageData, 0, 0);
+                }
+                return originalToDataURL.apply(this, arguments);
+            };
+
+            const originalCreateOscillator = AudioContext.prototype.createOscillator;
+            AudioContext.prototype.createOscillator = function() {
+                const osc = originalCreateOscillator.apply(this, arguments);
+                const originalStart = osc.start;
+                osc.start = function() {
+                    setTimeout(() => originalStart.apply(this, arguments), Math.random() * 2);
+                };
+                return osc;
+            };
+
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                    Promise.resolve({state: Notification.permission}) :
+                    originalQuery(parameters)
+            );
         """)
 
         print(f"\n🤖 News Bot started (Post-Only Mode) — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
