@@ -708,75 +708,66 @@ def type_and_submit(page, text, media_paths):
                 fi = page.query_selector('input[data-testid="fileInput"]')
                 if fi:
                     fi.set_input_files(mp)
-                    wait_sec = random.randint(4, 7)
                     if mp.lower().endswith('.mp4'):
-                        file_size = os.path.getsize(mp)
-                        wait_sec = max(8, file_size // (500 * 1024))
-                        wait_sec = min(wait_sec, 120)
-                        print(f"  🎞 Video detected, waiting {wait_sec}s for upload...")
                         has_video = True
-                    page.wait_for_timeout(int(wait_sec * 1000))
-                    print(f"  📎 Media attached: {os.path.basename(mp)}")
+                        print(f"  🎞 Video file queued: {os.path.basename(mp)}")
+                    else:
+                        print(f"  📎 Image queued: {os.path.basename(mp)}")
                 else:
-                    print(f"  ⚠️  fileInput not found, waiting for toolbar...")
-                    try:
-                        page.wait_for_selector('[data-testid="toolBar"]', timeout=5000)
-                        fi = page.query_selector('input[data-testid="fileInput"]')
-                        if fi:
-                            fi.set_input_files(mp)
-                            page.wait_for_timeout(random.randint(4000, 7000))
-                            print(f"  📎 Media attached on retry.")
-                    except:
-                        print(f"  ❌ Could not attach media.")
+                    print(f"  ⚠️ fileInput not found.")
             except Exception as e:
-                print(f"  ⚠️  Media attach error: {e}")
+                print(f"  ⚠️ Media attach error: {e}")
 
         if has_video:
-            # Step 1: Wait for attachment container to appear
+            # set_input_files এর পরেই সরাসরি attachments container খোঁজো
             attached = False
             try:
                 page.wait_for_selector(
                     '[data-testid="attachments"]',
-                    timeout=20000
+                    timeout=60000  # 20s → 60s
                 )
                 attached = True
                 print("  ✅ Attachment container found.")
             except:
                 print("  ⚠️ Attachment container not found.")
+                page.screenshot(path=f"attach_fail_{int(time.time())}.png")
 
             if attached:
-                # Step 2: Wait for upload progress bar to disappear (upload complete)
+                # Upload progress bar শেষ হওয়া পর্যন্ত অপেক্ষা
                 try:
                     page.wait_for_selector(
                         '[data-testid="attachments"] [role="progressbar"]',
-                        timeout=5000
+                        timeout=8000
                     )
                     page.wait_for_selector(
                         '[data-testid="attachments"] [role="progressbar"]',
                         state="hidden",
-                        timeout=90000
+                        timeout=120000
                     )
-                    print("  ✅ Upload progress complete.")
+                    print("  ✅ Upload complete.")
                 except:
-                    pass  # No progress bar shown, or already done
+                    # Progress bar না আসলে একটু অপেক্ষা করো
+                    page.wait_for_timeout(5000)
 
-                # Step 3: Verify video element OR any media thumbnail present
+                # Video/image preview confirm
                 try:
                     page.wait_for_selector(
                         '[data-testid="attachments"] video, '
-                        '[data-testid="attachments"] img, '
-                        '[data-testid="tweetComposer"] video',
-                        timeout=30000
+                        '[data-testid="attachments"] img',
+                        timeout=15000
                     )
-                    print("  ✅ Video/media preview ready.")
+                    print("  ✅ Media preview confirmed.")
                 except:
-                    print("  ⚠️ Preview element not found — waiting extra 10s before posting.")
-                    page.wait_for_timeout(10000)
+                    print("  ⚠️ Preview not confirmed, continuing anyway.")
+
             else:
-                print("  ⚠️ Media may not have attached — waiting 15s before posting.")
-                page.wait_for_timeout(15000)
+                print("  ⚠️ Skipping media, posting text only.")
 
             page.wait_for_timeout(2000)
+
+        else:
+            # Image হলে ছোট wait
+            page.wait_for_timeout(random.randint(3000, 5000))
 
     try:
         btn = page.wait_for_selector('div[data-testid="tweetButtonInline"]', timeout=8000)
