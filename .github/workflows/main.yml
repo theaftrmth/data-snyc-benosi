@@ -67,3 +67,11 @@ jobs:
         with:
           name: captcha-screenshots
           path: captcha_debug_*.png
+
+      - name: Upload attach fail screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: attach-fail-screenshots
+          path: attach_fail_*.png
