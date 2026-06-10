@@ -5,7 +5,7 @@ on:
 
 jobs:
   run-bot:
-    runs-on: ubuntu-22.04   # ← এখানে আগে ছিল ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 360
 
     steps:
@@ -47,7 +47,8 @@ jobs:
           SESSION_JSON: ${{ secrets.SESSION_JSON }}
           SOURCES: ${{ secrets.SOURCES }}
           HEADLESS: false
-        run: xvfb-run python benosi.py
+          PYTHONUNBUFFERED: 1
+        run: xvfb-run python bot.py
 
       - name: Save bot cache
         if: always()
@@ -62,6 +63,7 @@ jobs:
       - name: Upload captcha debug screenshots
         if: always()
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: captcha-screenshots
           path: captcha_debug_*.png
