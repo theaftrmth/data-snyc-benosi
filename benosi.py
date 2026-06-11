@@ -640,10 +640,42 @@ def human_type(element, text):
     time.sleep(random.uniform(0.5, 1.2))
 
 # ──────────────────────────────────────────────
-# POSTING (Valor-style – no stealth script, reliable video upload)
+# Valor bot helpers
 # ──────────────────────────────────────────────
 
-def type_and_submit(page, text, media_paths):
+def attach_media(page, media_paths: list[str]):
+    for mp in media_paths:
+        try:
+            fi = page.query_selector('input[data-testid="fileInput"]')
+            if fi:
+                fi.set_input_files(mp)
+                page.wait_for_timeout(random.randint(3500, 6000))
+                print(f"  📎 Media attached: {os.path.basename(mp)}")
+            else:
+                print(f"  ⚠️  fileInput পাওয়া যায়নি।")
+        except Exception as e:
+            print(f"  ⚠️  Media attach error: {e}")
+
+def get_submit_button(page, timeout: int = 12000):
+    selectors = [
+        'div[data-testid="tweetButtonInline"]',
+        'button[data-testid="tweetButtonInline"]',
+        'div[data-testid="tweetButton"]',
+        'button[data-testid="tweetButton"]',
+    ]
+    deadline = time.time() + timeout / 1000
+    while time.time() < deadline:
+        for sel in selectors:
+            try:
+                el = page.query_selector(sel)
+                if el and el.is_visible() and el.is_enabled():
+                    return el
+            except Exception:
+                pass
+        time.sleep(0.3)
+    return None
+
+def type_and_submit(page, text: str, media_paths: list[str]) -> bool:
     viewport = page.viewport_size
     human_mouse_move(page, viewport['width']//2, viewport['height']//2)
     textarea = page.wait_for_selector(
@@ -654,37 +686,19 @@ def type_and_submit(page, text, media_paths):
     human_type(textarea, text)
     page.wait_for_timeout(random.randint(800, 1500))
 
-    # সরাসরি fileInput-এ সব ফাইল একবারে সেট (Valor bot-এর নির্ভরযোগ্য পদ্ধতি)
     if media_paths:
-        has_video = any(f.lower().endswith('.mp4') for f in media_paths)
-        try:
-            fi = page.wait_for_selector('input[data-testid="fileInput"]', timeout=10000)
-            fi.set_input_files(media_paths)  # সব ফাইল একবারে
-            print(f"  📎 {len(media_paths)} media file(s) attached.")
+        attach_media(page, media_paths)
+        page.wait_for_timeout(1000)
 
-            if has_video:
-                # ফাইল সাইজ অনুযায়ী পর্যাপ্ত অপেক্ষা (ন্যূনতম ১৫ সেকেন্ড, সর্বোচ্চ ৯০ সেকেন্ড)
-                total_size = sum(os.path.getsize(mp) for mp in media_paths if mp.lower().endswith('.mp4'))
-                wait_sec = min(90, max(15, total_size // (500 * 1024)))
-                print(f"  🎞 Video(s) total size: {total_size//1024}KB → waiting {wait_sec}s for upload...")
-                page.wait_for_timeout(wait_sec * 1000)
-                print("  ✅ Video wait complete, ready to post.")
-            else:
-                # ছবির জন্য অল্প অপেক্ষা
-                page.wait_for_timeout(random.randint(2000, 4000))
-        except Exception as e:
-            print(f"  ⚠️ Media attachment failed: {e}")
-
-    # পোস্ট বাটনে ক্লিক
-    try:
-        btn = page.wait_for_selector('div[data-testid="tweetButtonInline"]', timeout=8000)
-    except:
-        btn = page.wait_for_selector('button[data-testid="tweetButton"]', timeout=8000)
-    box = btn.bounding_box()
-    human_mouse_move(page, box['x'] + box['width']//2, box['y'] + box['height']//2)
-    page.wait_for_timeout(random.randint(500, 1200))
+    btn = get_submit_button(page, timeout=12000)
+    if not btn:
+        print("  ❌ Submit বাটন পাওয়া যায়নি।")
+        return False
+    print(f"  🖱️  Submit করছে...")
+    time.sleep(random.uniform(0.8, 1.6))
     btn.click()
-    page.wait_for_timeout(5000)
+    page.wait_for_timeout(random.randint(4000, 7000))
+    return True
 
 def open_compose_and_post(page, text, media_paths):
     for method_num, method in enumerate(["keyboard", "sidenav", "direct"], 1):
@@ -711,9 +725,11 @@ def open_compose_and_post(page, text, media_paths):
                     raise Exception("CAPTCHA_DETECTED")
 
             page.wait_for_timeout(random.randint(2000, 4000))
-            type_and_submit(page, text, media_paths)
-            print(f"  ✅ Method {method_num} success!")
-            return True
+            ok = type_and_submit(page, text, media_paths)
+            if ok:
+                print(f"  ✅ Method {method_num} success!")
+                return True
+            print(f"  ❌ Method {method_num} ব্যর্থ।")
         except Exception as e:
             if "CAPTCHA_DETECTED" in str(e):
                 raise
@@ -897,8 +913,7 @@ def run_bot_loop():
             viewport={'width': 1920, 'height': 1080}
         )
         page = context.new_page()
-        # ⚠️ সম্পূর্ণ add_init_script বাদ — শুধুমাত্র Chrome flag-এর মাধ্যমে stealth
-        # Valor bot-এর মতো কোনো init script নেই, তাতেও detection হয় না এবং video upload কাজ করে
+        # কোনো add_init_script নেই — Valor bot-এর মতো
 
         print(f"\n🤖 News Bot started (Post-Only Mode) — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         iteration = 0
