@@ -640,12 +640,15 @@ def human_type(element, text):
     time.sleep(random.uniform(0.5, 1.2))
 
 # ──────────────────────────────────────────────
-# Valor bot helpers
+# VALOR BOT EXACT HELPERS
 # ──────────────────────────────────────────────
 
-def attach_media(page, media_paths: list[str]):
+def attach_media(page, media_paths):
+    """Valor bot-এর exact পদ্ধতি — একে একে ফাইল attach, প্রতিবার escape ও delay"""
     for mp in media_paths:
         try:
+            page.keyboard.press("Escape")  # কোনো modal থাকলে বন্ধ
+            time.sleep(0.5)
             fi = page.query_selector('input[data-testid="fileInput"]')
             if fi:
                 fi.set_input_files(mp)
@@ -656,7 +659,7 @@ def attach_media(page, media_paths: list[str]):
         except Exception as e:
             print(f"  ⚠️  Media attach error: {e}")
 
-def get_submit_button(page, timeout: int = 12000):
+def get_submit_button(page, timeout=12000):
     selectors = [
         'div[data-testid="tweetButtonInline"]',
         'button[data-testid="tweetButtonInline"]',
@@ -670,19 +673,19 @@ def get_submit_button(page, timeout: int = 12000):
                 el = page.query_selector(sel)
                 if el and el.is_visible() and el.is_enabled():
                     return el
-            except Exception:
+            except:
                 pass
         time.sleep(0.3)
     return None
 
-def type_and_submit(page, text: str, media_paths: list[str]) -> bool:
-    viewport = page.viewport_size
-    human_mouse_move(page, viewport['width']//2, viewport['height']//2)
+def type_and_submit(page, text, media_paths):
     textarea = page.wait_for_selector(
         'div[data-testid="tweetTextarea_0"]', timeout=25000
     )
-    box = textarea.bounding_box()
-    human_mouse_move(page, box['x'] + box['width']//2, box['y'] + box['height']//2)
+    if not textarea:
+        print("  ❌ Textarea পাওয়া যায়নি।")
+        return False
+    print(f"  ✅ Textarea found, typing...")
     human_type(textarea, text)
     page.wait_for_timeout(random.randint(800, 1500))
 
@@ -690,7 +693,7 @@ def type_and_submit(page, text: str, media_paths: list[str]) -> bool:
         attach_media(page, media_paths)
         page.wait_for_timeout(1000)
 
-    btn = get_submit_button(page, timeout=12000)
+    btn = get_submit_button(page)
     if not btn:
         print("  ❌ Submit বাটন পাওয়া যায়নি।")
         return False
@@ -703,39 +706,38 @@ def type_and_submit(page, text: str, media_paths: list[str]) -> bool:
 def open_compose_and_post(page, text, media_paths):
     for method_num, method in enumerate(["keyboard", "sidenav", "direct"], 1):
         try:
-            print(f"  🔄 Method {method_num} trying...")
-            if method in ["keyboard", "sidenav"]:
+            print(f"  🔄 Method {method_num} ({method})...")
+            if method in ("keyboard", "sidenav"):
                 page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=60000)
                 page.wait_for_timeout(random.randint(4000, 7000))
+                page.keyboard.press("Escape")
+                time.sleep(0.8)
                 if check_captcha(page):
                     raise Exception("CAPTCHA_DETECTED")
                 if method == "keyboard":
                     page.keyboard.press("n")
                 else:
                     btn = page.wait_for_selector(
-                        'a[data-testid="SideNav_NewTweet_Button"]', timeout=15000
-                    )
-                    box = btn.bounding_box()
-                    human_mouse_move(page, box['x'] + box['width']//2, box['y'] + box['height']//2)
+                        'a[data-testid="SideNav_NewTweet_Button"]', timeout=15000)
                     btn.click()
             else:
-                page.goto("https://x.com/compose/post", wait_until="domcontentloaded", timeout=60000)
+                page.goto("https://x.com/compose/post",
+                          wait_until="domcontentloaded", timeout=60000)
                 page.wait_for_timeout(random.randint(4000, 7000))
+                page.keyboard.press("Escape")
+                time.sleep(0.8)
                 if check_captcha(page):
                     raise Exception("CAPTCHA_DETECTED")
-
-            page.wait_for_timeout(random.randint(2000, 4000))
+            page.wait_for_timeout(random.randint(2000, 3500))
             ok = type_and_submit(page, text, media_paths)
             if ok:
-                print(f"  ✅ Method {method_num} success!")
+                print(f"  ✅ Method {method_num} সফল!")
                 return True
             print(f"  ❌ Method {method_num} ব্যর্থ।")
         except Exception as e:
             if "CAPTCHA_DETECTED" in str(e):
                 raise
             print(f"  ❌ Method {method_num} failed: {e}")
-
-    print("  💥 All methods failed.")
     return False
 
 # ──────────────────────────────────────────────
@@ -913,7 +915,7 @@ def run_bot_loop():
             viewport={'width': 1920, 'height': 1080}
         )
         page = context.new_page()
-        # কোনো add_init_script নেই — Valor bot-এর মতো
+        # Valor bot-এর মতো কোনো init script নেই
 
         print(f"\n🤖 News Bot started (Post-Only Mode) — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         iteration = 0
