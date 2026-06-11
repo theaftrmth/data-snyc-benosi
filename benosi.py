@@ -783,266 +783,41 @@ def type_and_submit(page, text, media_paths):
     page.wait_for_timeout(5000)
 
 
-# ──────────────────────────────────────────────
-# TWITTER INTERNAL API — REQUESTS-BASED POSTING
-# Playwright UI দিয়ে video attach করলে stealth mode-এ React pipeline
-# silently fail হয়। তাই session cookies extract করে সরাসরি
-# Twitter-এর upload API ব্যবহার করা হচ্ছে।
-# ──────────────────────────────────────────────
-
-TWITTER_WEB_BEARER = (
-    "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
-    "%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
-)
-
-# Twitter GraphQL queryId for CreateTweet.
-# DevTools → Network → CreateTweet request থেকে নেওয়া।
-# যদি ভবিষ্যতে বদলায়: DevTools-এ আবার দেখে এই একটা value update করো।
-_CT_QUERY_ID = "zWBsbUW6mqkNJv25Yrp-_Q"
-_CT_URL = f"https://x.com/i/api/graphql/{_CT_QUERY_ID}/CreateTweet"
-
-_CT_FEATURES = {
-    "communities_web_enable_tweet_community_results_fetch": True,
-    "c9s_tweet_anatomy_moderator_badge_enabled": True,
-    "tweetypie_unmention_optimization_enabled": True,
-    "responsive_web_edit_tweet_api_enabled": True,
-    "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
-    "view_counts_everywhere_api_enabled": True,
-    "longform_notetweets_consumption_enabled": True,
-    "responsive_web_twitter_article_tweet_consumption_enabled": True,
-    "tweet_awards_web_tipping_enabled": False,
-    "creator_subscriptions_quote_tweet_preview_enabled": False,
-    "longform_notetweets_rich_text_read_enabled": True,
-    "longform_notetweets_inline_media_enabled": True,
-    "articles_preview_enabled": True,
-    "rweb_video_timestamps_enabled": True,
-    "rweb_tipjar_consumption_enabled": True,
-    "responsive_web_graphql_exclude_directive_enabled": True,
-    "verified_phone_label_enabled": False,
-    "freedom_of_speech_not_reach_the_sky_enabled": True,
-    "standardized_nudges_misinfo": True,
-    "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
-    "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
-    "responsive_web_graphql_timeline_navigation_enabled": True,
-    "responsive_web_enhance_cards_enabled": False,
-}
-
-
-def _build_api_headers(page):
-    """
-    Playwright page context থেকে session cookies extract করে
-    Twitter API-র জন্য headers dict তৈরি করে।
-    """
-    try:
-        cookies = page.context.cookies()
-        ct0 = next((c["value"] for c in cookies if c["name"] == "ct0"), None)
-        auth_token = next((c["value"] for c in cookies if c["name"] == "auth_token"), None)
-        if not ct0 or not auth_token:
-            print("  ❌ [API] ct0 বা auth_token cookie পাওয়া যায়নি।")
-            return None
-        # সব cookie একসাথে string-এ
-        cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
-        return {
-            "Authorization": f"Bearer {TWITTER_WEB_BEARER}",
-            "x-csrf-token": ct0,
-            "Cookie": cookie_str,
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/136.0.0.0 Safari/537.36"
-            ),
-            "x-twitter-active-user": "yes",
-            "x-twitter-auth-type": "OAuth2Session",
-            "x-twitter-client-language": "en",
-            "Origin": "https://x.com",
-            "Referer": "https://x.com/",
-        }
-    except Exception as e:
-        print(f"  ❌ [API] Header build error: {e}")
-        return None
-
-
-def _upload_media_api(api_headers, file_path, is_video=True):
-    """
-    Twitter-এর chunked media upload API দিয়ে video বা image upload করে।
-    INIT → APPEND (4MB chunks) → FINALIZE → POLL processing
-    Returns: media_id_string অথবা None
-    """
-    try:
-        file_size = os.path.getsize(file_path)
-        mime = "video/mp4" if is_video else "image/jpeg"
-        category = "tweet_video" if is_video else "tweet_image"
-        # multipart request-এ Content-Type requests নিজেই set করে
-        h = {k: v for k, v in api_headers.items() if k.lower() != "content-type"}
-
-        # ── INIT ──
-        print(f"  📡 [API] INIT {category} ({file_size // 1024}KB)...")
-        r = requests.post(
-            "https://upload.twitter.com/1.1/media/upload.json",
-            headers=h,
-            data={
-                "command": "INIT",
-                "total_bytes": file_size,
-                "media_type": mime,
-                "media_category": category,
-            },
-            timeout=30,
-        )
-        init_data = r.json()
-        media_id = init_data.get("media_id_string")
-        if not media_id:
-            print(f"  ❌ [API] INIT failed ({r.status_code}): {init_data}")
-            return None
-        print(f"  ✅ [API] INIT OK → media_id: {media_id}")
-
-        # ── APPEND (4MB chunks) ──
-        CHUNK_SIZE = 4 * 1024 * 1024
-        seg = 0
-        with open(file_path, "rb") as f:
-            while True:
-                chunk = f.read(CHUNK_SIZE)
-                if not chunk:
-                    break
-                r = requests.post(
-                    "https://upload.twitter.com/1.1/media/upload.json",
-                    headers=h,
-                    data={
-                        "command": "APPEND",
-                        "media_id": media_id,
-                        "segment_index": seg,
-                    },
-                    files={"media": ("blob", chunk, "application/octet-stream")},
-                    timeout=60,
-                )
-                print(f"  📤 [API] APPEND seg {seg} → {r.status_code}")
-                if r.status_code not in (200, 204):
-                    print(f"      ⚠️ Body: {r.text[:150]}")
-                seg += 1
-
-        # ── FINALIZE ──
-        print("  📡 [API] FINALIZE...")
-        r = requests.post(
-            "https://upload.twitter.com/1.1/media/upload.json",
-            headers=h,
-            data={"command": "FINALIZE", "media_id": media_id},
-            timeout=30,
-        )
-        final = r.json()
-        proc = final.get("processing_info", {})
-
-        # ── POLL processing (video-র জন্য দরকার) ──
-        deadline = time.time() + 180
-        while proc.get("state") in ("pending", "in_progress") and time.time() < deadline:
-            wait = max(proc.get("check_after_secs", 5), 3)
-            pct = proc.get("progress_percent", 0)
-            print(f"  ⏳ [API] Video processing {pct}%... {wait}s wait")
-            time.sleep(wait)
-            r = requests.get(
-                "https://upload.twitter.com/1.1/media/upload.json",
-                headers=h,
-                params={"command": "STATUS", "media_id": media_id},
-                timeout=15,
-            )
-            proc = r.json().get("processing_info", {})
-
-        if proc.get("state") == "failed":
-            print(f"  ❌ [API] Processing failed: {proc.get('error', {})}")
-            return None
-
-        print(f"  ✅ [API] Media ready → media_id: {media_id}")
-        return media_id
-
-    except Exception as e:
-        print(f"  ❌ [API] Upload error: {e}")
-        return None
-
-
-def _post_tweet_api(api_headers, text, media_id=None):
-    """
-    Twitter-এর internal GraphQL API দিয়ে tweet post করে।
-    URL: DevTools থেকে নেওয়া সঠিক endpoint।
-    """
-    variables = {
-        "tweet_text": text,
-        "dark_request": False,
-        "semantic_annotation_ids": [],
-    }
-    if media_id:
-        variables["media"] = {"media_ids": [media_id], "tagged_users": []}
-
-    payload = {
-        "variables": variables,
-        "features": _CT_FEATURES,
-        "queryId": _CT_QUERY_ID,
-    }
-    headers = {**api_headers, "Content-Type": "application/json"}
-
-    try:
-        r = requests.post(_CT_URL, headers=headers, json=payload, timeout=20)
-        data = r.json()
-
-        if r.status_code == 200 and "data" in data:
-            tweet_id = (
-                data["data"]
-                .get("create_tweet", {})
-                .get("tweet_results", {})
-                .get("result", {})
-                .get("rest_id")
-            )
-            if tweet_id:
-                print(f"  ✅ [API] Tweet posted! id: {tweet_id}")
-                return True
-            print(f"  ❌ [API] Response OK কিন্তু tweet_id নেই: {str(data)[:200]}")
-            return False
-
-        errs = data.get("errors", [])
-        if errs:
-            code = errs[0].get("code", 0)
-            msg = errs[0].get("message", "")[:500]
-            ext = errs[0].get("extensions", {})
-            print(f"  ❌ [API] Error {code}: {msg}")
-            print(f"  ❌ [API] Extensions: {ext}")
-        else:
-            print(f"  ❌ [API] HTTP {r.status_code}: {str(data)[:200]}")
-        return False
-
-    except Exception as e:
-        print(f"  ❌ [API] Exception: {e}")
-        return False
-
-
 def open_compose_and_post(page, text, media_paths):
-    """
-    Tweet post করে media সহ — সম্পূর্ণ API-based।
-    Playwright UI compose box আর ব্যবহার হয় না।
-    """
-    # x.com-এ থাকলে session cookies page context-এ loaded থাকে
-    try:
-        if "x.com" not in page.url and "twitter.com" not in page.url:
-            page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(2000)
-    except:
-        pass
+    for method_num, method in enumerate(["keyboard", "sidenav", "direct"], 1):
+        try:
+            print(f"  🔄 Method {method_num} trying...")
+            if method in ["keyboard", "sidenav"]:
+                page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(random.randint(4000, 7000))
+                if check_captcha(page):
+                    raise Exception("CAPTCHA_DETECTED")
+                if method == "keyboard":
+                    page.keyboard.press("n")
+                else:
+                    btn = page.wait_for_selector(
+                        'a[data-testid="SideNav_NewTweet_Button"]', timeout=15000
+                    )
+                    box = btn.bounding_box()
+                    human_mouse_move(page, box['x'] + box['width']//2, box['y'] + box['height']//2)
+                    btn.click()
+            else:
+                page.goto("https://x.com/compose/post", wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(random.randint(4000, 7000))
+                if check_captcha(page):
+                    raise Exception("CAPTCHA_DETECTED")
 
-    api_headers = _build_api_headers(page)
-    if not api_headers:
-        print("  ❌ Session থেকে API headers বানানো যায়নি। Post বাতিল।")
-        return False
+            page.wait_for_timeout(random.randint(2000, 4000))
+            type_and_submit(page, text, media_paths)
+            print(f"  ✅ Method {method_num} success!")
+            return True
+        except Exception as e:
+            if "CAPTCHA_DETECTED" in str(e):
+                raise
+            print(f"  ❌ Method {method_num} failed: {e}")
 
-    media_id = None
-    videos = [p for p in media_paths if p.lower().endswith(".mp4")]
-    images = [p for p in media_paths if not p.lower().endswith(".mp4")]
-
-    if videos:
-        print("  🎬 [API] Video uploading...")
-        media_id = _upload_media_api(api_headers, videos[0], is_video=True)
-        if not media_id:
-            print("  ⚠️ Video upload failed — text only post হবে।")
-    elif images:
-        print("  🖼 [API] Image uploading...")
-        media_id = _upload_media_api(api_headers, images[0], is_video=False)
-
-    return _post_tweet_api(api_headers, text, media_id)
+    print("  💥 All methods failed.")
+    return False
 
 
 # ──────────────────────────────────────────────
@@ -1208,7 +983,17 @@ def run_bot_loop():
 
     with sync_playwright() as p:
         headless = os.environ.get("HEADLESS", "false").lower() == "true"
-        browser = p.chromium.launch(headless=headless)
+        browser = p.chromium.launch(
+            headless=headless,
+            channel="chrome",          # Real Chrome = H.264/MP4 codec support for video upload
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",  # GitHub Actions-এ shared memory crash ঠেকায়
+                "--use-gl=egl",             # Video thumbnail rendering এর জন্য
+            ]
+        )
         session_data = load_session()
         context = browser.new_context(
             storage_state=session_data,
