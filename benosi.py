@@ -841,10 +841,17 @@ _CT_FEATURES = {
 }
 
 
+def _generate_transaction_id():
+    """Twitter anti-automation: x-client-transaction-id header এর জন্য random ID।"""
+    import base64
+    return base64.b64encode(os.urandom(32)).decode("utf-8").rstrip("=")
+
+
 def _build_api_headers(page):
     """
     Playwright page context থেকে session cookies extract করে
     Twitter API-র জন্য headers dict তৈরি করে।
+    x-client-transaction-id যোগ করা হয়েছে — এটা না থাকলে error 226 আসে।
     """
     try:
         cookies = page.context.cookies()
@@ -867,6 +874,7 @@ def _build_api_headers(page):
             "x-twitter-active-user": "yes",
             "x-twitter-auth-type": "OAuth2Session",
             "x-twitter-client-language": "en",
+            "x-client-transaction-id": _generate_transaction_id(),
             "Origin": "https://x.com",
             "Referer": "https://x.com/",
         }
@@ -980,7 +988,6 @@ def _post_tweet_api(api_headers, text, media_id=None):
         "tweet_text": text,
         "semantic_annotation_ids": [],
         "disallowed_reply_options": None,
-        "semantic_annotation_options": {"source": "Htl"},
     }
     if media_id:
         variables["media"] = {
