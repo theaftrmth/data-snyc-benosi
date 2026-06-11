@@ -426,7 +426,7 @@ def download_video_with_ytdlp(tweet_url):
             if size > 100 * 1024 * 1024:   # 100 MB limit
                 print("  ⚠️ Video too large (100MB+), skip.")
                 os.remove(out_path)
-                return None
+                return "TOO_LARGE"
             return out_path
         else:
             print(f"  ❌ yt-dlp failed: {result.stderr[:200]}")
@@ -448,6 +448,8 @@ def extract_media_urls_safely(page, tweet_index):
             print(f"  🎬 Video detected, yt-dlp: {tweet_url}")
             if tweet_url:
                 vpath = download_video_with_ytdlp(tweet_url)
+                if vpath == "TOO_LARGE":
+                    return "TOO_LARGE"
                 if vpath:
                     return [vpath]
             print("  ⚠️ Video failed, trying images...")
@@ -739,19 +741,8 @@ def type_and_submit(page, text, media_paths):
                 page.screenshot(path=f"attach_fail_{int(time.time())}.png")
 
             if attached:
-                # div[aria-live="polite"][role="status"] এ "Uploaded" text আসা পর্যন্ত wait
-                try:
-                    page.wait_for_function(
-                        """() => {
-                            const s = document.querySelector('div[aria-live="polite"][role="status"]');
-                            return s && s.innerText.includes('Uploaded');
-                        }""",
-                        timeout=120000
-                    )
-                    print("  ✅ Upload complete.")
-                except:
-                    print("  ⚠️ Upload status not detected, waiting fallback...")
-                    page.wait_for_timeout(8000)
+                # Upload শেষ হওয়ার জন্য fixed wait
+                page.wait_for_timeout(45000)
 
                 # Video preview confirm
                 try:
@@ -909,7 +900,23 @@ def perform_post_only(page, posted_cache):
     if reloaded:
         has_video = check_video_in_article(page, best_idx)
         media_paths = extract_media_urls_safely(page, best_idx)
-        print(f"  🎥 Video: {has_video}, 🖼 Media: {len(media_paths)} files")
+        if media_paths == "TOO_LARGE":
+            print("  ⏭ Video too large, trying next best candidate...")
+            remaining = [c for c in candidates if c != best_tweet]
+            if not remaining:
+                print("  ❌ No more candidates.")
+                return False
+            best_tweet = max(remaining, key=lambda x: x['score'])
+            original_text = best_tweet['text']
+            chosen_source = best_tweet['source']
+            best_idx = best_tweet['index']
+            print(f"  🔄 New selection: @{chosen_source} | {original_text[:80]}...")
+            has_video = check_video_in_article(page, best_idx)
+            media_paths = extract_media_urls_safely(page, best_idx)
+            if media_paths == "TOO_LARGE":
+                print("  ⚠️ Next candidate also too large, posting text only.")
+                media_paths = []
+        print(f"  🎥 Video: {has_video}, 🖼 Media: {len(media_paths) if isinstance(media_paths, list) else 0} files")
 
     print("  🤖 Generating caption...")
     final_caption = build_final_caption(original_text, has_video=has_video)
