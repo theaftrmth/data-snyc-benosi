@@ -640,7 +640,7 @@ def human_type(element, text):
     time.sleep(random.uniform(0.5, 1.2))
 
 # ──────────────────────────────────────────────
-# POSTING (correct "Add photos or video" button)
+# POSTING (Valor-style – single fileInput with all files)
 # ──────────────────────────────────────────────
 
 def type_and_submit(page, text, media_paths):
@@ -654,44 +654,40 @@ def type_and_submit(page, text, media_paths):
     human_type(textarea, text)
     page.wait_for_timeout(random.randint(800, 1500))
 
+    # Valor bot-এর মতো সরাসরি fileInput ব্যবহার (একবারে সব ফাইল)
     if media_paths:
         has_video = any(f.lower().endswith('.mp4') for f in media_paths)
         try:
-            attach_btn = page.wait_for_selector(
-                'button[aria-label="Add photos or video"]', timeout=10000
-            )
-            if attach_btn:
-                with page.expect_file_chooser(timeout=10000) as fc_info:
-                    attach_btn.click()
-                file_chooser = fc_info.value
-                file_chooser.set_files(media_paths)
-                print(f"  📎 {len(media_paths)} media file(s) queued via file chooser.")
+            fi = page.wait_for_selector('input[data-testid="fileInput"]', timeout=10000)
+            fi.set_input_files(media_paths)  # সব ফাইল একবারে
+            print(f"  📎 {len(media_paths)} media file(s) attached.")
 
-                if has_video:
-                    print("  🎞 Waiting for video upload to complete...")
-                    try:
-                        page.wait_for_function(
-                            """() => {
-                                const s = document.querySelector('div[aria-live="polite"][role="status"]');
-                                return s && s.innerText.includes('Uploaded');
-                            }""",
-                            timeout=60000
-                        )
-                        print("  ✅ Video upload completed (status).")
-                    except:
-                        try:
-                            page.wait_for_selector(
-                                'div[data-testid="attachments"] video',
-                                timeout=30000
-                            )
-                            print("  ✅ Video preview found (fallback).")
-                        except:
-                            print("  ⚠️ Video upload confirmation failed; will attempt post anyway.")
+            if has_video:
+                # ভিডিও থাকলে আপলোড সম্পূর্ণ হওয়ার জন্য অপেক্ষা
+                total_wait = 0
+                for mp in media_paths:
+                    if mp.lower().endswith('.mp4'):
+                        total_wait += min(30, 5 + os.path.getsize(mp) // (500 * 1024))
+                total_wait = max(total_wait, 8)  # অন্তত ৮ সেকেন্ড
+                print(f"  🎞 Waiting {total_wait}s for video processing...")
+                page.wait_for_timeout(total_wait * 1000)
+
+                # নিরাপত্তা নিশ্চিতকরণ: attachments-এ ভিডিও আছে কিনা
+                try:
+                    page.wait_for_selector(
+                        'div[data-testid="attachments"] video',
+                        timeout=15000
+                    )
+                    print("  ✅ Video preview confirmed.")
+                except:
+                    print("  ⚠️ Video preview not detected; will try to post anyway.")
             else:
-                print("  ⚠️ Attach button not found.")
+                # শুধু ছবি হলে অল্প সময় অপেক্ষা
+                page.wait_for_timeout(random.randint(2000, 4000))
         except Exception as e:
             print(f"  ⚠️ Media attachment failed: {e}")
 
+    # পোস্ট বাটনে ক্লিক
     try:
         btn = page.wait_for_selector('div[data-testid="tweetButtonInline"]', timeout=8000)
     except:
@@ -878,7 +874,7 @@ def human_delay(iteration, hour):
     return base
 
 # ──────────────────────────────────────────────
-# MAIN LOOP (clean stealth, correct video upload)
+# MAIN LOOP (Valor-style browser launch + clean stealth)
 # ──────────────────────────────────────────────
 
 def run_bot_loop():
@@ -898,7 +894,10 @@ def run_bot_loop():
 
     with sync_playwright() as p:
         headless = os.environ.get("HEADLESS", "false").lower() == "true"
-        browser = p.chromium.launch(headless=headless)
+        browser = p.chromium.launch(
+            headless=headless,
+            args=["--disable-blink-features=AutomationControlled"]
+        )
         session_data = load_session()
         context = browser.new_context(
             storage_state=session_data,
@@ -911,7 +910,7 @@ def run_bot_loop():
         )
         page = context.new_page()
 
-        # Clean stealth (WebGL, Canvas, AudioContext removed to fix video upload)
+        # Clean stealth (WebGL/Canvas/Audio removed to fix video)
         page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
