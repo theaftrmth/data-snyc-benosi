@@ -640,7 +640,7 @@ def human_type(element, text):
     time.sleep(random.uniform(0.5, 1.2))
 
 # ──────────────────────────────────────────────
-# POSTING (Valor-style – reliable video upload)
+# POSTING (Valor-style – no stealth script, reliable video upload)
 # ──────────────────────────────────────────────
 
 def type_and_submit(page, text, media_paths):
@@ -862,7 +862,7 @@ def human_delay(iteration, hour):
     return base
 
 # ──────────────────────────────────────────────
-# MAIN LOOP (Valor-style browser launch + clean stealth)
+# MAIN LOOP (Valor-style: no add_init_script)
 # ──────────────────────────────────────────────
 
 def run_bot_loop():
@@ -897,24 +897,8 @@ def run_bot_loop():
             viewport={'width': 1920, 'height': 1080}
         )
         page = context.new_page()
-
-        # Clean stealth (WebGL/Canvas/Audio removed to fix video)
-        page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
-            window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}, app: {}};
-            Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
-            Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
-            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-            Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
-
-            const originalQuery = window.navigator.permissions.query;
-            window.navigator.permissions.query = (parameters) => (
-                parameters.name === 'notifications' ?
-                    Promise.resolve({state: Notification.permission}) :
-                    originalQuery(parameters)
-            );
-        """)
+        # ⚠️ সম্পূর্ণ add_init_script বাদ — শুধুমাত্র Chrome flag-এর মাধ্যমে stealth
+        # Valor bot-এর মতো কোনো init script নেই, তাতেও detection হয় না এবং video upload কাজ করে
 
         print(f"\n🤖 News Bot started (Post-Only Mode) — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         iteration = 0
