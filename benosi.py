@@ -640,7 +640,7 @@ def human_type(element, text):
     time.sleep(random.uniform(0.5, 1.2))
 
 # ──────────────────────────────────────────────
-# POSTING (Valor-style – single fileInput with all files)
+# POSTING (Valor-style – reliable video upload)
 # ──────────────────────────────────────────────
 
 def type_and_submit(page, text, media_paths):
@@ -654,7 +654,7 @@ def type_and_submit(page, text, media_paths):
     human_type(textarea, text)
     page.wait_for_timeout(random.randint(800, 1500))
 
-    # Valor bot-এর মতো সরাসরি fileInput ব্যবহার (একবারে সব ফাইল)
+    # সরাসরি fileInput-এ সব ফাইল একবারে সেট (Valor bot-এর নির্ভরযোগ্য পদ্ধতি)
     if media_paths:
         has_video = any(f.lower().endswith('.mp4') for f in media_paths)
         try:
@@ -663,26 +663,14 @@ def type_and_submit(page, text, media_paths):
             print(f"  📎 {len(media_paths)} media file(s) attached.")
 
             if has_video:
-                # ভিডিও থাকলে আপলোড সম্পূর্ণ হওয়ার জন্য অপেক্ষা
-                total_wait = 0
-                for mp in media_paths:
-                    if mp.lower().endswith('.mp4'):
-                        total_wait += min(30, 5 + os.path.getsize(mp) // (500 * 1024))
-                total_wait = max(total_wait, 8)  # অন্তত ৮ সেকেন্ড
-                print(f"  🎞 Waiting {total_wait}s for video processing...")
-                page.wait_for_timeout(total_wait * 1000)
-
-                # নিরাপত্তা নিশ্চিতকরণ: attachments-এ ভিডিও আছে কিনা
-                try:
-                    page.wait_for_selector(
-                        'div[data-testid="attachments"] video',
-                        timeout=15000
-                    )
-                    print("  ✅ Video preview confirmed.")
-                except:
-                    print("  ⚠️ Video preview not detected; will try to post anyway.")
+                # ফাইল সাইজ অনুযায়ী পর্যাপ্ত অপেক্ষা (ন্যূনতম ১৫ সেকেন্ড, সর্বোচ্চ ৯০ সেকেন্ড)
+                total_size = sum(os.path.getsize(mp) for mp in media_paths if mp.lower().endswith('.mp4'))
+                wait_sec = min(90, max(15, total_size // (500 * 1024)))
+                print(f"  🎞 Video(s) total size: {total_size//1024}KB → waiting {wait_sec}s for upload...")
+                page.wait_for_timeout(wait_sec * 1000)
+                print("  ✅ Video wait complete, ready to post.")
             else:
-                # শুধু ছবি হলে অল্প সময় অপেক্ষা
+                # ছবির জন্য অল্প অপেক্ষা
                 page.wait_for_timeout(random.randint(2000, 4000))
         except Exception as e:
             print(f"  ⚠️ Media attachment failed: {e}")
