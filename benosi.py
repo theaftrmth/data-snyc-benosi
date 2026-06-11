@@ -802,56 +802,36 @@ _CT_QUERY_ID = "zWBsbUW6mqkNJv25Yrp-_Q"
 _CT_URL = f"https://x.com/i/api/graphql/{_CT_QUERY_ID}/CreateTweet"
 
 _CT_FEATURES = {
-    "premium_content_api_read_enabled": False,
     "communities_web_enable_tweet_community_results_fetch": True,
     "c9s_tweet_anatomy_moderator_badge_enabled": True,
-    "responsive_web_grok_analyze_button_fetch_trends_enabled": False,
-    "responsive_web_grok_analyze_post_followups_enabled": True,
-    "rweb_cashtags_composer_attachment_enabled": True,
-    "responsive_web_jetfuel_frame": True,
-    "responsive_web_grok_share_attachment_enabled": True,
-    "responsive_web_grok_annotations_enabled": True,
+    "tweetypie_unmention_optimization_enabled": True,
     "responsive_web_edit_tweet_api_enabled": True,
-    "rweb_conversational_replies_downvote_enabled": False,
     "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
     "view_counts_everywhere_api_enabled": True,
     "longform_notetweets_consumption_enabled": True,
     "responsive_web_twitter_article_tweet_consumption_enabled": True,
-    "content_disclosure_indicator_enabled": True,
-    "content_disclosure_ai_generated_indicator_enabled": True,
-    "responsive_web_grok_show_grok_translated_post": True,
-    "responsive_web_grok_analysis_button_from_backend": True,
-    "post_ctas_fetch_enabled": True,
+    "tweet_awards_web_tipping_enabled": False,
+    "creator_subscriptions_quote_tweet_preview_enabled": False,
     "longform_notetweets_rich_text_read_enabled": True,
-    "longform_notetweets_inline_media_enabled": False,
-    "profile_label_improvements_pcf_label_in_post_enabled": True,
-    "responsive_web_profile_redirect_enabled": False,
-    "rweb_tipjar_consumption_enabled": False,
-    "verified_phone_label_enabled": False,
+    "longform_notetweets_inline_media_enabled": True,
     "articles_preview_enabled": True,
-    "rweb_cashtags_enabled": True,
-    "responsive_web_grok_community_note_auto_translation_is_enabled": True,
-    "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
-    "freedom_of_speech_not_reach_fetch_enabled": True,
+    "rweb_video_timestamps_enabled": True,
+    "rweb_tipjar_consumption_enabled": True,
+    "responsive_web_graphql_exclude_directive_enabled": True,
+    "verified_phone_label_enabled": False,
+    "freedom_of_speech_not_reach_the_sky_enabled": True,
     "standardized_nudges_misinfo": True,
     "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
-    "responsive_web_grok_image_annotation_enabled": True,
-    "responsive_web_grok_imagine_annotation_enabled": True,
+    "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
     "responsive_web_graphql_timeline_navigation_enabled": True,
+    "responsive_web_enhance_cards_enabled": False,
 }
-
-
-def _generate_transaction_id():
-    """Twitter anti-automation: x-client-transaction-id header এর জন্য random ID।"""
-    import base64
-    return base64.b64encode(os.urandom(32)).decode("utf-8").rstrip("=")
 
 
 def _build_api_headers(page):
     """
     Playwright page context থেকে session cookies extract করে
     Twitter API-র জন্য headers dict তৈরি করে।
-    x-client-transaction-id যোগ করা হয়েছে — এটা না থাকলে error 226 আসে।
     """
     try:
         cookies = page.context.cookies()
@@ -874,7 +854,6 @@ def _build_api_headers(page):
             "x-twitter-active-user": "yes",
             "x-twitter-auth-type": "OAuth2Session",
             "x-twitter-client-language": "en",
-            "x-client-transaction-id": _generate_transaction_id(),
             "Origin": "https://x.com",
             "Referer": "https://x.com/",
         }
@@ -982,18 +961,14 @@ def _post_tweet_api(api_headers, text, media_id=None):
     """
     Twitter-এর internal GraphQL API দিয়ে tweet post করে।
     URL: DevTools থেকে নেওয়া সঠিক endpoint।
-    media structure: media_entities (সঠিক) — আগের media_ids ভুল ছিল।
     """
     variables = {
         "tweet_text": text,
+        "dark_request": False,
         "semantic_annotation_ids": [],
-        "disallowed_reply_options": None,
     }
     if media_id:
-        variables["media"] = {
-            "media_entities": [{"media_id": media_id, "tagged_users": []}],
-            "possibly_sensitive": False,
-        }
+        variables["media"] = {"media_ids": [media_id], "tagged_users": []}
 
     payload = {
         "variables": variables,
@@ -1023,8 +998,10 @@ def _post_tweet_api(api_headers, text, media_id=None):
         errs = data.get("errors", [])
         if errs:
             code = errs[0].get("code", 0)
-            msg = errs[0].get("message", "")[:150]
+            msg = errs[0].get("message", "")[:500]
+            ext = errs[0].get("extensions", {})
             print(f"  ❌ [API] Error {code}: {msg}")
+            print(f"  ❌ [API] Extensions: {ext}")
         else:
             print(f"  ❌ [API] HTTP {r.status_code}: {str(data)[:200]}")
         return False
