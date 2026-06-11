@@ -41,6 +41,7 @@ os.makedirs(MEDIA_DIR, exist_ok=True)
 # DAILY POST LIMIT
 # ──────────────────────────────────────────────
 def get_daily_limit():
+    """Returns (target_limit, current_count) and ensures a fresh target for a new day."""
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if os.path.exists(DAILY_LIMIT_FILE):
         try:
@@ -91,12 +92,14 @@ def load_session():
             print(f"❌ session.json error: {e}")
     return None
 
+
 def validate_session():
     session = load_session()
     if session is None:
         print("❌ No session found (set SESSION_JSON or provide session.json). Bot stopped.")
         return False
     return True
+
 
 # ──────────────────────────────────────────────
 # CAPTCHA LOCK (with screenshot)
@@ -118,13 +121,22 @@ def is_captcha_locked():
     print("✅ Captcha lock ended.")
     return False
 
+
 def set_captcha_lock():
     with open(CAPTCHA_LOCK_FILE, "w") as f:
         f.write(str(time.time()))
     print("🔒 Captcha lock set for 12h.")
 
+
 def check_captcha(page):
+    """
+    Returns True if a captcha/challenge is detected (and locks the bot).
+    Takes a screenshot for debugging.
+    Fixed: removed div[class*="captcha"] to prevent false positives from
+    X's "Get Verified" popup and other internal elements.
+    """
     try:
+        # Only match specific, unambiguous captcha elements (NOT div[class*="captcha"] — too broad)
         captcha = page.query_selector(
             'iframe[src*="captcha"], '
             'div[data-testid="captcha"], '
@@ -139,6 +151,7 @@ def check_captcha(page):
     except:
         pass
 
+    # Check body text AND URL together to avoid false positives
     try:
         page_text = page.inner_text('body').lower()
         if any(phrase in page_text for phrase in [
@@ -156,6 +169,7 @@ def check_captcha(page):
     except:
         pass
 
+    # Check URL only
     current_url = page.url.lower()
     if "challenge" in current_url or "captcha" in current_url:
         print("  ⚠️ Challenge/Captcha URL detected!")
@@ -164,6 +178,7 @@ def check_captcha(page):
         return True
 
     return False
+
 
 # ──────────────────────────────────────────────
 # CACHE
@@ -177,19 +192,23 @@ def text_hash(text):
     t = re.sub(r'\s+', ' ', t).strip()[:250]
     return hashlib.sha256(t.encode()).hexdigest()[:16]
 
+
 def load_cache(filepath):
     if not os.path.exists(filepath):
         return set()
     with open(filepath, "r", encoding="utf-8") as f:
         return set(line.strip() for line in f if line.strip())
 
+
 def save_to_cache(text, filepath):
     h = text_hash(text)
     with open(filepath, "a", encoding="utf-8") as f:
         f.write(h + "\n")
 
+
 def is_duplicate(text, cache):
     return text_hash(text) in cache
+
 
 def trim_cache(filepath, limit=500):
     if not os.path.exists(filepath):
@@ -200,6 +219,7 @@ def trim_cache(filepath, limit=500):
         with open(filepath, "w", encoding="utf-8") as f:
             f.writelines(lines[-limit:])
 
+
 # ──────────────────────────────────────────────
 # FILTERS
 # ──────────────────────────────────────────────
@@ -207,8 +227,10 @@ def trim_cache(filepath, limit=500):
 def is_promotional(text):
     return any(kw in text.lower() for kw in PROMO_KEYWORDS)
 
+
 def is_too_short(text, min_chars=40):
     return len(text.strip()) < min_chars
+
 
 def is_pinned_tweet(tweet_element):
     try:
@@ -222,6 +244,7 @@ def is_pinned_tweet(tweet_element):
         pass
     return False
 
+
 def is_thread_continuation(tweet_element):
     try:
         outer = tweet_element.inner_html()
@@ -233,6 +256,7 @@ def is_thread_continuation(tweet_element):
         pass
     return False
 
+
 def is_retweet(tweet_element):
     try:
         ctx = tweet_element.query_selector('[data-testid="socialContext"]')
@@ -243,6 +267,7 @@ def is_retweet(tweet_element):
     except:
         pass
     return False
+
 
 def get_tweet_age_minutes(tweet_element):
     try:
@@ -256,6 +281,7 @@ def get_tweet_age_minutes(tweet_element):
     except:
         pass
     return 9999
+
 
 # ──────────────────────────────────────────────
 # SCORING (fallback)
@@ -272,6 +298,7 @@ def has_news_keywords(text):
     ]
     return any(kw in text.lower() for kw in keywords)
 
+
 def parse_count(text):
     if not text:
         return 0
@@ -285,6 +312,7 @@ def parse_count(text):
     except:
         return 0
 
+
 def get_tweet_engagement(tweet):
     total = 0
     try:
@@ -296,6 +324,7 @@ def get_tweet_engagement(tweet):
         pass
     return total
 
+
 def get_tweet_view_count(tweet):
     try:
         view_btn = tweet.query_selector('a[href*="/analytics"], [data-testid="analyticsButton"]')
@@ -306,6 +335,7 @@ def get_tweet_view_count(tweet):
         return sum(parse_count(s.inner_text()) for s in stats) * 50
     except:
         return 0
+
 
 def score_tweet(text, likes, views=0, age_minutes=9999):
     score = 0.0
@@ -329,6 +359,7 @@ def score_tweet(text, likes, views=0, age_minutes=9999):
         score -= 50
     return score
 
+
 # ──────────────────────────────────────────────
 # VIDEO / MEDIA
 # ──────────────────────────────────────────────
@@ -343,6 +374,7 @@ def check_video_in_article(page, tweet_index):
     except:
         return False
 
+
 def get_tweet_url_from_article(page, tweet_index):
     try:
         url = page.evaluate(f"""() => {{
@@ -355,6 +387,7 @@ def get_tweet_url_from_article(page, tweet_index):
     except:
         return None
 
+
 def download_media(url, filename):
     try:
         r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
@@ -366,6 +399,7 @@ def download_media(url, filename):
     except Exception as e:
         print(f"  ❌ Image download failed: {e}")
     return None
+
 
 def download_video_with_ytdlp(tweet_url):
     if not tweet_url:
@@ -389,7 +423,7 @@ def download_video_with_ytdlp(tweet_url):
                 print("  ⚠️ Downloaded file is 0 bytes, skipping.")
                 os.remove(out_path)
                 return None
-            if size > 100 * 1024 * 1024:
+            if size > 100 * 1024 * 1024:   # 100 MB limit
                 print("  ⚠️ Video too large (100MB+), skip.")
                 os.remove(out_path)
                 return None
@@ -403,6 +437,7 @@ def download_video_with_ytdlp(tweet_url):
     except Exception as e:
         print(f"  ❌ Video download error: {e}")
     return None
+
 
 def extract_media_urls_safely(page, tweet_index):
     media_paths = []
@@ -435,6 +470,7 @@ def extract_media_urls_safely(page, tweet_index):
         print(f"  ⚠️ Media extract error: {e}")
     return media_paths
 
+
 # ──────────────────────────────────────────────
 # AI
 # ──────────────────────────────────────────────
@@ -444,6 +480,7 @@ def clean_text(text):
     text = re.sub(r'_+', '', text)
     text = re.sub(r'#+', '', text)
     return text.strip()
+
 
 def ai_call(prompt):
     try:
@@ -457,6 +494,7 @@ def ai_call(prompt):
     except Exception as e:
         print(f"  ❌ AI error: {e}")
         return None
+
 
 # ──────────────────────────────────────────────
 # AI SELECTION (POST)
@@ -494,6 +532,7 @@ Example: 2"""
         print(f"  ⚠️ AI post selection error: {e}")
     return None
 
+
 # ──────────────────────────────────────────────
 # CAPTION GENERATION
 # ──────────────────────────────────────────────
@@ -502,6 +541,7 @@ LABEL_KEYWORDS = {
     "DEVELOPING": ["developing", "ongoing", "unfolding", "continues", "still"],
     "INTERESTING": ["interesting", "surprising", "unexpected", "unusual", "curious", "remarkable"],
 }
+
 
 def _fallback_label(text, has_video=False):
     lower = text.lower()
@@ -512,6 +552,7 @@ def _fallback_label(text, has_video=False):
         return "WATCH"
     return "BREAKING"
 
+
 def _label_emoji(label):
     return {
         "BREAKING": "🚨",
@@ -519,6 +560,7 @@ def _label_emoji(label):
         "WATCH": "⚠️",
         "INTERESTING": "🔍",
     }.get(label, "🚨")
+
 
 def _fix_double_colon(caption):
     match = re.match(r'^([A-Z][a-zA-Z\s]{1,30}):\s+(.+)$', caption)
@@ -528,6 +570,7 @@ def _fix_double_colon(caption):
         return f"{name_part} {rest}" if rest.startswith('"') else f"{name_part} says {rest}"
     return caption
 
+
 def _trim_no_ellipsis(caption: str, max_chars=217) -> str:
     if len(caption) <= max_chars:
         return caption
@@ -536,6 +579,7 @@ def _trim_no_ellipsis(caption: str, max_chars=217) -> str:
     if last_space > 0:
         return portion[:last_space]
     return portion
+
 
 def build_final_caption(original_text, has_video=False):
     prompt = f"""You are a sharp breaking news editor on X/Twitter.
@@ -615,6 +659,7 @@ Tweet:
     caption = _trim_no_ellipsis(caption, max_chars=217)
     return f"{_label_emoji(label)} {label} | {caption}"
 
+
 # ──────────────────────────────────────────────
 # HUMAN-LIKE MOUSE MOVEMENT & TYPING
 # ──────────────────────────────────────────────
@@ -630,6 +675,7 @@ def human_mouse_move(page, target_x, target_y, steps=15):
         page.mouse.move(x, y)
         time.sleep(random.uniform(0.005, 0.015))
 
+
 def human_type(element, text):
     element.click()
     time.sleep(random.uniform(0.3, 0.8))
@@ -639,106 +685,363 @@ def human_type(element, text):
             time.sleep(random.uniform(0.3, 0.9))
     time.sleep(random.uniform(0.5, 1.2))
 
-# ──────────────────────────────────────────────
-# VALOR BOT EXACT HELPERS
-# ──────────────────────────────────────────────
 
-def attach_media(page, media_paths):
-    """Valor bot-এর exact পদ্ধতি — একে একে ফাইল attach, প্রতিবার escape ও delay"""
-    for mp in media_paths:
-        try:
-            page.keyboard.press("Escape")  # কোনো modal থাকলে বন্ধ
-            time.sleep(0.5)
-            fi = page.query_selector('input[data-testid="fileInput"]')
-            if fi:
-                fi.set_input_files(mp)
-                page.wait_for_timeout(random.randint(3500, 6000))
-                print(f"  📎 Media attached: {os.path.basename(mp)}")
-            else:
-                print(f"  ⚠️  fileInput পাওয়া যায়নি।")
-        except Exception as e:
-            print(f"  ⚠️  Media attach error: {e}")
-
-def get_submit_button(page, timeout=12000):
-    selectors = [
-        'div[data-testid="tweetButtonInline"]',
-        'button[data-testid="tweetButtonInline"]',
-        'div[data-testid="tweetButton"]',
-        'button[data-testid="tweetButton"]',
-    ]
-    deadline = time.time() + timeout / 1000
-    while time.time() < deadline:
-        for sel in selectors:
-            try:
-                el = page.query_selector(sel)
-                if el and el.is_visible() and el.is_enabled():
-                    return el
-            except:
-                pass
-        time.sleep(0.3)
-    return None
+# ──────────────────────────────────────────────
+# POSTING (fixed: manual stealth, correct video selector)
+# ──────────────────────────────────────────────
 
 def type_and_submit(page, text, media_paths):
+    viewport = page.viewport_size
+    human_mouse_move(page, viewport['width']//2, viewport['height']//2)
     textarea = page.wait_for_selector(
         'div[data-testid="tweetTextarea_0"]', timeout=25000
     )
-    if not textarea:
-        print("  ❌ Textarea পাওয়া যায়নি।")
-        return False
-    print(f"  ✅ Textarea found, typing...")
+    box = textarea.bounding_box()
+    human_mouse_move(page, box['x'] + box['width']//2, box['y'] + box['height']//2)
     human_type(textarea, text)
     page.wait_for_timeout(random.randint(800, 1500))
 
     if media_paths:
-        attach_media(page, media_paths)
-        page.wait_for_timeout(1000)
+        has_video = False
+        for mp in media_paths:
+            try:
+                # expect_file_chooser ব্যবহার করো — stealth mode-এ React event ঠিকমতো fire হয়
+                attach_btn = page.query_selector('button[aria-label="Add photos or video"]')
+                if attach_btn:
+                    with page.expect_file_chooser(timeout=10000) as fc_info:
+                        attach_btn.click()
+                    file_chooser = fc_info.value
+                    file_chooser.set_files(mp)
+                    if mp.lower().endswith('.mp4'):
+                        has_video = True
+                        print(f"  🎞 Video file queued: {os.path.basename(mp)}")
+                    else:
+                        print(f"  📎 Image queued: {os.path.basename(mp)}")
+                else:
+                    print(f"  ⚠️ Attach button not found.")
+            except Exception as e:
+                print(f"  ⚠️ Media attach error: {e}")
 
-    btn = get_submit_button(page)
-    if not btn:
-        print("  ❌ Submit বাটন পাওয়া যায়নি।")
-        return False
-    print(f"  🖱️  Submit করছে...")
-    time.sleep(random.uniform(0.8, 1.6))
+        if has_video:
+            # React upload pipeline শুরু হওয়ার সময় দাও
+            page.wait_for_timeout(3000)
+
+            attached = False
+            try:
+                page.wait_for_selector(
+                    'div[data-testid="attachments"]',
+                    timeout=30000
+                )
+                attached = True
+                print("  ✅ Attachment container found.")
+            except:
+                print("  ⚠️ Attachment container not found.")
+                page.screenshot(path=f"attach_fail_{int(time.time())}.png")
+
+            if attached:
+                # div[aria-live="polite"][role="status"] এ "Uploaded" text আসা পর্যন্ত wait
+                try:
+                    page.wait_for_function(
+                        """() => {
+                            const s = document.querySelector('div[aria-live="polite"][role="status"]');
+                            return s && s.innerText.includes('Uploaded');
+                        }""",
+                        timeout=120000
+                    )
+                    print("  ✅ Upload complete.")
+                except:
+                    print("  ⚠️ Upload status not detected, waiting fallback...")
+                    page.wait_for_timeout(8000)
+
+                # Video preview confirm
+                try:
+                    page.wait_for_selector(
+                        'div[data-testid="attachments"] video',
+                        timeout=15000
+                    )
+                    print("  ✅ Video preview confirmed.")
+                except:
+                    print("  ⚠️ Preview not confirmed, continuing anyway.")
+
+            else:
+                print("  ⚠️ Skipping media, posting text only.")
+
+            page.wait_for_timeout(2000)
+
+        else:
+            # Image হলে ছোট wait
+            page.wait_for_timeout(random.randint(3000, 5000))
+
+    try:
+        btn = page.wait_for_selector('div[data-testid="tweetButtonInline"]', timeout=8000)
+    except:
+        btn = page.wait_for_selector('button[data-testid="tweetButton"]', timeout=8000)
+    box = btn.bounding_box()
+    human_mouse_move(page, box['x'] + box['width']//2, box['y'] + box['height']//2)
+    page.wait_for_timeout(random.randint(500, 1200))
     btn.click()
-    page.wait_for_timeout(random.randint(4000, 7000))
-    return True
+    page.wait_for_timeout(5000)
+
+
+# ──────────────────────────────────────────────
+# TWITTER INTERNAL API — REQUESTS-BASED POSTING
+# Playwright UI দিয়ে video attach করলে stealth mode-এ React pipeline
+# silently fail হয়। তাই session cookies extract করে সরাসরি
+# Twitter-এর upload API ব্যবহার করা হচ্ছে।
+# ──────────────────────────────────────────────
+
+TWITTER_WEB_BEARER = (
+    "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
+    "%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
+)
+
+# Twitter GraphQL queryId for CreateTweet.
+# DevTools → Network → CreateTweet request থেকে নেওয়া।
+# যদি ভবিষ্যতে বদলায়: DevTools-এ আবার দেখে এই একটা value update করো।
+_CT_QUERY_ID = "zWBsbUW6mqkNJv25Yrp-_Q"
+_CT_URL = f"https://x.com/i/api/graphql/{_CT_QUERY_ID}/CreateTweet"
+
+_CT_FEATURES = {
+    "communities_web_enable_tweet_community_results_fetch": True,
+    "c9s_tweet_anatomy_moderator_badge_enabled": True,
+    "tweetypie_unmention_optimization_enabled": True,
+    "responsive_web_edit_tweet_api_enabled": True,
+    "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
+    "view_counts_everywhere_api_enabled": True,
+    "longform_notetweets_consumption_enabled": True,
+    "responsive_web_twitter_article_tweet_consumption_enabled": True,
+    "tweet_awards_web_tipping_enabled": False,
+    "creator_subscriptions_quote_tweet_preview_enabled": False,
+    "longform_notetweets_rich_text_read_enabled": True,
+    "longform_notetweets_inline_media_enabled": True,
+    "articles_preview_enabled": True,
+    "rweb_video_timestamps_enabled": True,
+    "rweb_tipjar_consumption_enabled": True,
+    "responsive_web_graphql_exclude_directive_enabled": True,
+    "verified_phone_label_enabled": False,
+    "freedom_of_speech_not_reach_the_sky_enabled": True,
+    "standardized_nudges_misinfo": True,
+    "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
+    "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
+    "responsive_web_graphql_timeline_navigation_enabled": True,
+    "responsive_web_enhance_cards_enabled": False,
+}
+
+
+def _build_api_headers(page):
+    """
+    Playwright page context থেকে session cookies extract করে
+    Twitter API-র জন্য headers dict তৈরি করে।
+    """
+    try:
+        cookies = page.context.cookies()
+        ct0 = next((c["value"] for c in cookies if c["name"] == "ct0"), None)
+        auth_token = next((c["value"] for c in cookies if c["name"] == "auth_token"), None)
+        if not ct0 or not auth_token:
+            print("  ❌ [API] ct0 বা auth_token cookie পাওয়া যায়নি।")
+            return None
+        # সব cookie একসাথে string-এ
+        cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+        return {
+            "Authorization": f"Bearer {TWITTER_WEB_BEARER}",
+            "x-csrf-token": ct0,
+            "Cookie": cookie_str,
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/136.0.0.0 Safari/537.36"
+            ),
+            "x-twitter-active-user": "yes",
+            "x-twitter-auth-type": "OAuth2Session",
+            "x-twitter-client-language": "en",
+            "Origin": "https://x.com",
+            "Referer": "https://x.com/",
+        }
+    except Exception as e:
+        print(f"  ❌ [API] Header build error: {e}")
+        return None
+
+
+def _upload_media_api(api_headers, file_path, is_video=True):
+    """
+    Twitter-এর chunked media upload API দিয়ে video বা image upload করে।
+    INIT → APPEND (4MB chunks) → FINALIZE → POLL processing
+    Returns: media_id_string অথবা None
+    """
+    try:
+        file_size = os.path.getsize(file_path)
+        mime = "video/mp4" if is_video else "image/jpeg"
+        category = "tweet_video" if is_video else "tweet_image"
+        # multipart request-এ Content-Type requests নিজেই set করে
+        h = {k: v for k, v in api_headers.items() if k.lower() != "content-type"}
+
+        # ── INIT ──
+        print(f"  📡 [API] INIT {category} ({file_size // 1024}KB)...")
+        r = requests.post(
+            "https://upload.twitter.com/1.1/media/upload.json",
+            headers=h,
+            data={
+                "command": "INIT",
+                "total_bytes": file_size,
+                "media_type": mime,
+                "media_category": category,
+            },
+            timeout=30,
+        )
+        init_data = r.json()
+        media_id = init_data.get("media_id_string")
+        if not media_id:
+            print(f"  ❌ [API] INIT failed ({r.status_code}): {init_data}")
+            return None
+        print(f"  ✅ [API] INIT OK → media_id: {media_id}")
+
+        # ── APPEND (4MB chunks) ──
+        CHUNK_SIZE = 4 * 1024 * 1024
+        seg = 0
+        with open(file_path, "rb") as f:
+            while True:
+                chunk = f.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                r = requests.post(
+                    "https://upload.twitter.com/1.1/media/upload.json",
+                    headers=h,
+                    data={
+                        "command": "APPEND",
+                        "media_id": media_id,
+                        "segment_index": seg,
+                    },
+                    files={"media": ("blob", chunk, "application/octet-stream")},
+                    timeout=60,
+                )
+                print(f"  📤 [API] APPEND seg {seg} → {r.status_code}")
+                if r.status_code not in (200, 204):
+                    print(f"      ⚠️ Body: {r.text[:150]}")
+                seg += 1
+
+        # ── FINALIZE ──
+        print("  📡 [API] FINALIZE...")
+        r = requests.post(
+            "https://upload.twitter.com/1.1/media/upload.json",
+            headers=h,
+            data={"command": "FINALIZE", "media_id": media_id},
+            timeout=30,
+        )
+        final = r.json()
+        proc = final.get("processing_info", {})
+
+        # ── POLL processing (video-র জন্য দরকার) ──
+        deadline = time.time() + 180
+        while proc.get("state") in ("pending", "in_progress") and time.time() < deadline:
+            wait = max(proc.get("check_after_secs", 5), 3)
+            pct = proc.get("progress_percent", 0)
+            print(f"  ⏳ [API] Video processing {pct}%... {wait}s wait")
+            time.sleep(wait)
+            r = requests.get(
+                "https://upload.twitter.com/1.1/media/upload.json",
+                headers=h,
+                params={"command": "STATUS", "media_id": media_id},
+                timeout=15,
+            )
+            proc = r.json().get("processing_info", {})
+
+        if proc.get("state") == "failed":
+            print(f"  ❌ [API] Processing failed: {proc.get('error', {})}")
+            return None
+
+        print(f"  ✅ [API] Media ready → media_id: {media_id}")
+        return media_id
+
+    except Exception as e:
+        print(f"  ❌ [API] Upload error: {e}")
+        return None
+
+
+def _post_tweet_api(api_headers, text, media_id=None):
+    """
+    Twitter-এর internal GraphQL API দিয়ে tweet post করে।
+    URL: DevTools থেকে নেওয়া সঠিক endpoint।
+    """
+    variables = {
+        "tweet_text": text,
+        "dark_request": False,
+        "semantic_annotation_ids": [],
+    }
+    if media_id:
+        variables["media"] = {"media_ids": [media_id], "tagged_users": []}
+
+    payload = {
+        "variables": variables,
+        "features": _CT_FEATURES,
+        "queryId": _CT_QUERY_ID,
+    }
+    headers = {**api_headers, "Content-Type": "application/json"}
+
+    try:
+        r = requests.post(_CT_URL, headers=headers, json=payload, timeout=20)
+        data = r.json()
+
+        if r.status_code == 200 and "data" in data:
+            tweet_id = (
+                data["data"]
+                .get("create_tweet", {})
+                .get("tweet_results", {})
+                .get("result", {})
+                .get("rest_id")
+            )
+            if tweet_id:
+                print(f"  ✅ [API] Tweet posted! id: {tweet_id}")
+                return True
+            print(f"  ❌ [API] Response OK কিন্তু tweet_id নেই: {str(data)[:200]}")
+            return False
+
+        errs = data.get("errors", [])
+        if errs:
+            code = errs[0].get("code", 0)
+            msg = errs[0].get("message", "")[:150]
+            print(f"  ❌ [API] Error {code}: {msg}")
+        else:
+            print(f"  ❌ [API] HTTP {r.status_code}: {str(data)[:200]}")
+        return False
+
+    except Exception as e:
+        print(f"  ❌ [API] Exception: {e}")
+        return False
+
 
 def open_compose_and_post(page, text, media_paths):
-    for method_num, method in enumerate(["keyboard", "sidenav", "direct"], 1):
-        try:
-            print(f"  🔄 Method {method_num} ({method})...")
-            if method in ("keyboard", "sidenav"):
-                page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=60000)
-                page.wait_for_timeout(random.randint(4000, 7000))
-                page.keyboard.press("Escape")
-                time.sleep(0.8)
-                if check_captcha(page):
-                    raise Exception("CAPTCHA_DETECTED")
-                if method == "keyboard":
-                    page.keyboard.press("n")
-                else:
-                    btn = page.wait_for_selector(
-                        'a[data-testid="SideNav_NewTweet_Button"]', timeout=15000)
-                    btn.click()
-            else:
-                page.goto("https://x.com/compose/post",
-                          wait_until="domcontentloaded", timeout=60000)
-                page.wait_for_timeout(random.randint(4000, 7000))
-                page.keyboard.press("Escape")
-                time.sleep(0.8)
-                if check_captcha(page):
-                    raise Exception("CAPTCHA_DETECTED")
-            page.wait_for_timeout(random.randint(2000, 3500))
-            ok = type_and_submit(page, text, media_paths)
-            if ok:
-                print(f"  ✅ Method {method_num} সফল!")
-                return True
-            print(f"  ❌ Method {method_num} ব্যর্থ।")
-        except Exception as e:
-            if "CAPTCHA_DETECTED" in str(e):
-                raise
-            print(f"  ❌ Method {method_num} failed: {e}")
-    return False
+    """
+    Tweet post করে media সহ — সম্পূর্ণ API-based।
+    Playwright UI compose box আর ব্যবহার হয় না।
+    """
+    # x.com-এ থাকলে session cookies page context-এ loaded থাকে
+    try:
+        if "x.com" not in page.url and "twitter.com" not in page.url:
+            page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(2000)
+    except:
+        pass
+
+    api_headers = _build_api_headers(page)
+    if not api_headers:
+        print("  ❌ Session থেকে API headers বানানো যায়নি। Post বাতিল।")
+        return False
+
+    media_id = None
+    videos = [p for p in media_paths if p.lower().endswith(".mp4")]
+    images = [p for p in media_paths if not p.lower().endswith(".mp4")]
+
+    if videos:
+        print("  🎬 [API] Video uploading...")
+        media_id = _upload_media_api(api_headers, videos[0], is_video=True)
+        if not media_id:
+            print("  ⚠️ Video upload failed — text only post হবে।")
+    elif images:
+        print("  🖼 [API] Image uploading...")
+        media_id = _upload_media_api(api_headers, images[0], is_video=False)
+
+    return _post_tweet_api(api_headers, text, media_id)
+
 
 # ──────────────────────────────────────────────
 # TIMELINE SCROLL (human-like)
@@ -754,6 +1057,7 @@ def simulate_scroll(page):
         print("  📜 Scrolled timeline naturally.")
     except Exception as e:
         print(f"  ⚠️ Scroll error: {e}")
+
 
 # ──────────────────────────────────────────────
 # POST-ONLY FUNCTION
@@ -858,6 +1162,7 @@ def perform_post_only(page, posted_cache):
         print("❌ Post failed.")
         return False
 
+
 # ──────────────────────────────────────────────
 # HUMAN DELAY FUNCTION
 # ──────────────────────────────────────────────
@@ -879,8 +1184,9 @@ def human_delay(iteration, hour):
 
     return base
 
+
 # ──────────────────────────────────────────────
-# MAIN LOOP (Valor-style: no add_init_script)
+# MAIN LOOP (manual stealth, full fingerprint)
 # ──────────────────────────────────────────────
 
 def run_bot_loop():
@@ -900,10 +1206,7 @@ def run_bot_loop():
 
     with sync_playwright() as p:
         headless = os.environ.get("HEADLESS", "false").lower() == "true"
-        browser = p.chromium.launch(
-            headless=headless,
-            args=["--disable-blink-features=AutomationControlled"]
-        )
+        browser = p.chromium.launch(headless=headless)
         session_data = load_session()
         context = browser.new_context(
             storage_state=session_data,
@@ -915,7 +1218,44 @@ def run_bot_loop():
             viewport={'width': 1920, 'height': 1080}
         )
         page = context.new_page()
-        # Valor bot-এর মতো কোনো init script নেই
+
+        # পূর্ণাঙ্গ ফিঙ্গারপ্রিন্ট স্পুফিং
+        page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+            window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}, app: {}};
+            Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+            Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+            Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+
+            const getParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                if (parameter === 37445) return 'Google Inc. (Intel)';
+                if (parameter === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+                return getParameter.call(this, parameter);
+            };
+
+            // Canvas toDataURL modification REMOVED — it broke X's video thumbnail
+            // generation in the compose box, causing videos to be dropped silently.
+
+            const originalCreateOscillator = AudioContext.prototype.createOscillator;
+            AudioContext.prototype.createOscillator = function() {
+                const osc = originalCreateOscillator.apply(this, arguments);
+                const originalStart = osc.start;
+                osc.start = function() {
+                    setTimeout(() => originalStart.apply(this, arguments), Math.random() * 2);
+                };
+                return osc;
+            };
+
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                    Promise.resolve({state: Notification.permission}) :
+                    originalQuery(parameters)
+            );
+        """)
 
         print(f"\n🤖 News Bot started (Post-Only Mode) — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         iteration = 0
