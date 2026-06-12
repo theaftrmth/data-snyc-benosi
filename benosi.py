@@ -10,7 +10,15 @@ import math
 from datetime import datetime, timezone
 import pytz
 from playwright.sync_api import sync_playwright
-import g4f
+import google.generativeai as genai
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    _gemini_model = genai.GenerativeModel("gemini-3.5-flash")
+else:
+    print("⚠️ GEMINI_API_KEY not set.")
+    _gemini_model = None
 
 # ──────────────────────────────────────────────
 # SOURCES (from env SOURCES)
@@ -486,12 +494,13 @@ def clean_text(text):
 
 def ai_call(prompt):
     try:
-        response = g4f.ChatCompletion.create(
-            model=g4f.models.default,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        if response:
-            return clean_text(str(response).strip())
+        if not _gemini_model:
+            print("  ❌ Gemini model not initialized.")
+            return None
+        response = _gemini_model.generate_content(prompt)
+        text = response.text.strip()
+        if text:
+            return clean_text(text)
         return None
     except Exception as e:
         print(f"  ❌ AI error: {e}")
@@ -514,7 +523,14 @@ def ai_select_best_tweet(tweet_list):
             })
         prompt = f"""You are a sharp geopolitical news editor for X/Twitter.
 Below are tweets from breaking news sources. Pick the ONE tweet that is the most newsworthy, urgent, and likely to get high engagement.
-**Avoid tweets that are primarily opinion, editorializing, or advocacy.** Prefer strictly factual, neutral reporting.
+
+STRICT DISQUALIFIERS — skip any tweet that contains:
+- Opinion, editorial commentary, or advocacy (even partially)
+- Loaded/charged labels applied by the source itself: "terrorist", "freedom fighter", "militant", "regime", "occupation", "genocide", "invasion", "liberation" etc. — unless these words appear inside a clearly attributed direct quote from an official body
+- Political takes, blame language, or calls to action
+- Reactions to news rather than the news itself (e.g. "This is outrageous", "We condemn...")
+
+Prefer strictly factual, event-based reporting: what happened, where, who was involved.
 Consider:
 - Global impact, surprise, conflict, diplomatic moves.
 - Uniqueness (not just a reaction).
@@ -594,12 +610,13 @@ RULES FOR REWRITING:
 - If the original is too long, pick ONLY the single most important fact and express it fully.
 - Keep the same meaning, make it punchy and urgent.
 - No hashtags, no markdown, no asterisks, no bold.
-- Preserve direct quotes word for word.
+- Preserve direct quotes word for word — BUT only if the quote is from a named official or institution AND the quoted word is factual, not a political label.
 - Avoid double colon (wrong: "Trump: says...", correct: "Trump says...").
 - Do NOT start the rewritten text with BREAKING, DEVELOPING, WATCH, or INTERESTING.
 - When mentioning official positions, use the full formal title (e.g., "Federal Reserve Chair" not just "Chair").
-- Maintain a strictly neutral, factual tone. Do not take sides.
-- Avoid any language that labels a group as "terrorist", "freedom fighter", "militant" etc. unless it's a direct quote from an official.
+- Maintain a strictly neutral, factual tone. Do not take sides. Do not reflect the source account opinion or framing.
+- NEVER use charged labels like "terrorist", "freedom fighter", "militant", "regime", "occupation", "genocide", "invasion", "liberation" — even if the source tweet uses them. Replace with neutral descriptions (e.g. "armed group", "forces", "government", "the group").
+- Do NOT carry over political commentary, blame language, or any opinion from the source tweet — rewrite only the factual core event.
 - Paraphrase naturally in simple words. Sound like a real human, not a news bot.
 
 RULES FOR LABEL:
