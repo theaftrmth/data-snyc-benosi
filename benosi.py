@@ -607,15 +607,15 @@ Task: Rewrite the tweet below, then choose the best label.
 RULES FOR REWRITING:
 - **Your ENTIRE rewritten text must be 220 characters or fewer. Do NOT exceed this limit.**
 - **Do NOT use '...' or any truncation markers. Your output must be a complete, self-contained sentence.**
-- If the original is too long, pick ONLY the single most important fact and express it fully.
+- If the original is longer than 220 characters, pick ONLY the most important fact and express it fully under 220 characters.
 - Keep the same meaning, make it punchy and urgent.
 - No hashtags, no markdown, no asterisks, no bold.
-- Preserve direct quotes word for word — BUT only if the quote is from a named official or institution AND the quoted word is factual, not a political label.
+- Preserve direct quotes word for word from named officials or institutions — do NOT paraphrase or rephrase quoted speech. Only remove a quote entirely if it contains politically charged, contested, or emotionally loaded language — in that case replace the whole quote with a neutral factual description instead.
 - Avoid double colon (wrong: "Trump: says...", correct: "Trump says...").
 - Do NOT start the rewritten text with BREAKING, DEVELOPING, WATCH, or INTERESTING.
 - When mentioning official positions, use the full formal title (e.g., "Federal Reserve Chair" not just "Chair").
 - Maintain a strictly neutral, factual tone. Do not take sides. Do not reflect the source account opinion or framing.
-- NEVER use charged labels like "terrorist", "freedom fighter", "militant", "regime", "occupation", "genocide", "invasion", "liberation" — even if the source tweet uses them. Replace with neutral descriptions (e.g. "armed group", "forces", "government", "the group").
+- Never use politically charged, contested, or emotionally loaded labels for groups, actions, or events — even if the source tweet uses them. Instead, describe what happened or who did what in plain factual terms (e.g. instead of a group identity label, say what the group did; instead of a contested event label, describe the event neutrally).
 - Do NOT carry over political commentary, blame language, or any opinion from the source tweet — rewrite only the factual core event.
 - Paraphrase naturally in simple words. Sound like a real human, not a news bot.
 
