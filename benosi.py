@@ -10,7 +10,148 @@ import math
 from datetime import datetime, timezone
 import pytz
 from playwright.sync_api import sync_playwright
-import g4f
+GROK_REFUSAL_PHRASES = [
+    "i'm sorry", "i cannot", "i can't", "i am unable", "not able to",
+    "inappropriate", "against my", "my guidelines", "i apologize",
+    "as an ai", "i must decline", "i won't", "cannot assist",
+    "thinking about", "let me think", "i'm thinking", "processing your",
+    "considering your", "analyzing your", "working on",
+]
+
+def _is_grok_refused(text: str) -> bool:
+    return len(text) < 8 or any(p in text.lower() for p in GROK_REFUSAL_PHRASES)
+
+def _clean_grok_output(text: str) -> str:
+    text = re.sub(r'^(Rewritten:|Original:|Title:|Output:|Caption:)\s*', "", text, flags=re.IGNORECASE)
+    text = re.sub(r'\*+|_+|`+', "", text)
+    return text.strip().strip('"\' ').strip()
+
+def generate_caption_with_grok(original_text: str, has_video: bool) -> str | None:
+    label_instruction = (
+        "VIDEO IS ATTACHED — WATCH label allowed if content fits."
+        if has_video else
+        "NO VIDEO — do NOT use WATCH label."
+    )
+    prompt = (
+        f"You are a breaking news editor for X/Twitter.\n"
+        f"Rewrite the tweet below as a neutral, factual caption under 220 characters.\n"
+        f"- Remove all opinion, bias, and charged political labels\n"
+        f"- Preserve direct quotes from named officials word for word; "
+        f"remove a quote only if it contains politically charged or emotionally loaded language\n"
+        f"- If longer than 220 characters, keep only the single most important fact\n"
+        f"- {label_instruction}\n\n"
+        f"Choose ONE label:\n"
+        f"BREAKING → confirmed, urgent event\n"
+        f"DEVELOPING → situation still unfolding\n"
+        f"WATCH → only if video shows the event\n"
+        f"INTERESTING → surprising fact, not urgent\n\n"
+        f"OUTPUT FORMAT (exactly, nothing else):\n"
+        f"LABEL|rewritten text\n\n"
+        f"Examples:\n"
+        f"BREAKING|Trump warns Iran of consequences unlike anything seen before if nuclear talks fail\n"
+        f"WATCH|Russian Su-35 engages Ukrainian drone — footage now circulating\n\n"
+        f"Tweet: {original_text}"
+    )
+    try:
+        session_data = load_session()
+        if not session_data:
+            print("  ❌ Session নেই, Grok চালানো সম্ভব না।")
+            return None
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled"]
+            )
+            context = browser.new_context(
+                storage_state=session_data,
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 800},
+            )
+            page = context.new_page()
+            print("  🌐 Grok লোড করছে...")
+            page.goto("https://x.com/i/grok", wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(3000)
+
+            textarea = None
+            for sel in ['textarea[placeholder="Ask anything"]', 'textarea']:
+                try:
+                    el = page.wait_for_selector(sel, timeout=8000)
+                    if el and el.is_visible():
+                        textarea = el
+                        break
+                except Exception:
+                    continue
+
+            if not textarea:
+                print("  ❌ Grok textarea পাওয়া যায়নি।")
+                browser.close()
+                return None
+
+            textarea.click()
+            page.wait_for_timeout(500)
+            textarea.fill(prompt)
+            page.wait_for_timeout(random.uniform(500, 800))
+
+            sent = False
+            for btn_sel in [
+                'button[aria-label="Send"]',
+                'button[data-testid="grok-send-button"]',
+                'button[type="submit"]',
+            ]:
+                try:
+                    btn = page.wait_for_selector(btn_sel, timeout=5000)
+                    if btn and btn.is_visible() and btn.is_enabled():
+                        btn.click()
+                        sent = True
+                        break
+                except Exception:
+                    continue
+
+            if not sent:
+                page.keyboard.press("Enter")
+
+            print("  ⏳ Grok response এর জন্য অপেক্ষা করছে...")
+            page.wait_for_timeout(15000)
+
+            response_text = ""
+            for attempt in range(20):
+                page.wait_for_timeout(1500)
+                try:
+                    els = page.query_selector_all("div.r-1wbh5a2.r-11niif6.r-bnwqim.r-13qz1uu")
+                    if els:
+                        for el in reversed(els):
+                            text = el.inner_text().strip()
+                            if text and len(text) > 5 and prompt[:20] not in text:
+                                if any(t in text.lower() for t in [
+                                    "thinking about", "let me think", "i'm thinking",
+                                    "processing", "considering", "analyzing"
+                                ]):
+                                    continue
+                                response_text = text
+                                break
+                except Exception:
+                    pass
+                if response_text:
+                    break
+                try:
+                    still_loading = page.query_selector("div.r-g2wd59.r-m5arl1.r-1eu1p3x")
+                    if not still_loading and attempt > 3:
+                        break
+                except Exception:
+                    pass
+
+            browser.close()
+
+            if response_text:
+                result = _clean_grok_output(response_text)
+                if result and not _is_grok_refused(result):
+                    print(f"  ✅ Grok caption: {result[:80]}")
+                    return result
+            print("  ⚠️ Grok: response পাওয়া যায়নি।")
+
+    except Exception as e:
+        print(f"  ⚠️ Grok error: {e}")
+    return None
 
 # ──────────────────────────────────────────────
 # SOURCES (from env SOURCES)
@@ -630,7 +771,7 @@ WATCH|Russian Su-35 engages Ukrainian drone — footage now circulating
 Tweet:
 {original_text}"""
 
-    result = ai_call(prompt)
+    result = generate_caption_with_grok(original_text, has_video)
 
     if result:
         if "|" in result:
