@@ -7,6 +7,8 @@ import requests
 import subprocess
 import json
 import math
+import threading
+import g4f
 from datetime import datetime, timezone
 import pytz
 from playwright.sync_api import sync_playwright
@@ -26,7 +28,11 @@ def _clean_grok_output(text: str) -> str:
     text = re.sub(r'\*+|_+|`+', "", text)
     return text.strip().strip('"\' ').strip()
 
-def generate_caption_with_grok(original_text: str, has_video: bool) -> str | None:
+def generate_caption_with_grok(original_text: str, has_video: bool, context=None) -> str | None:
+    if context is None:
+        print("  ⚠️ Grok: context নেই, skip করছি।")
+        return None
+
     label_instruction = (
         "VIDEO IS ATTACHED — WATCH label allowed if content fits."
         if has_video else
@@ -52,105 +58,93 @@ def generate_caption_with_grok(original_text: str, has_video: bool) -> str | Non
         f"WATCH|Russian Su-35 engages Ukrainian drone — footage now circulating\n\n"
         f"Tweet: {original_text}"
     )
+
+    # একই browser context-এ নতুন tab — আলাদা browser নয়
+    grok_page = context.new_page()
     try:
-        session_data = load_session()
-        if not session_data:
-            print("  ❌ Session নেই, Grok চালানো সম্ভব না।")
-            return None
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(
-                headless=True,
-                args=["--disable-blink-features=AutomationControlled"]
-            )
-            context = browser.new_context(
-                storage_state=session_data,
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-                viewport={"width": 1280, "height": 800},
-            )
-            page = context.new_page()
-            print("  🌐 Grok লোড করছে...")
-            page.goto("https://x.com/i/grok", wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(3000)
+        print("  🌐 Grok লোড করছে...")
+        grok_page.goto("https://x.com/i/grok", wait_until="domcontentloaded", timeout=30000)
+        grok_page.wait_for_timeout(3000)
 
-            textarea = None
-            for sel in ['textarea[placeholder="Ask anything"]', 'textarea']:
-                try:
-                    el = page.wait_for_selector(sel, timeout=8000)
-                    if el and el.is_visible():
-                        textarea = el
-                        break
-                except Exception:
-                    continue
-
-            if not textarea:
-                print("  ❌ Grok textarea পাওয়া যায়নি।")
-                browser.close()
-                return None
-
-            textarea.click()
-            page.wait_for_timeout(500)
-            textarea.fill(prompt)
-            page.wait_for_timeout(random.uniform(500, 800))
-
-            sent = False
-            for btn_sel in [
-                'button[aria-label="Send"]',
-                'button[data-testid="grok-send-button"]',
-                'button[type="submit"]',
-            ]:
-                try:
-                    btn = page.wait_for_selector(btn_sel, timeout=5000)
-                    if btn and btn.is_visible() and btn.is_enabled():
-                        btn.click()
-                        sent = True
-                        break
-                except Exception:
-                    continue
-
-            if not sent:
-                page.keyboard.press("Enter")
-
-            print("  ⏳ Grok response এর জন্য অপেক্ষা করছে...")
-            page.wait_for_timeout(15000)
-
-            response_text = ""
-            for attempt in range(20):
-                page.wait_for_timeout(1500)
-                try:
-                    els = page.query_selector_all("div.r-1wbh5a2.r-11niif6.r-bnwqim.r-13qz1uu")
-                    if els:
-                        for el in reversed(els):
-                            text = el.inner_text().strip()
-                            if text and len(text) > 5 and prompt[:20] not in text:
-                                if any(t in text.lower() for t in [
-                                    "thinking about", "let me think", "i'm thinking",
-                                    "processing", "considering", "analyzing"
-                                ]):
-                                    continue
-                                response_text = text
-                                break
-                except Exception:
-                    pass
-                if response_text:
+        textarea = None
+        for sel in ['textarea[placeholder="Ask anything"]', 'textarea']:
+            try:
+                el = grok_page.wait_for_selector(sel, timeout=8000)
+                if el and el.is_visible():
+                    textarea = el
                     break
-                try:
-                    still_loading = page.query_selector("div.r-g2wd59.r-m5arl1.r-1eu1p3x")
-                    if not still_loading and attempt > 3:
-                        break
-                except Exception:
-                    pass
+            except Exception:
+                continue
 
-            browser.close()
+        if not textarea:
+            print("  ❌ Grok textarea পাওয়া যায়নি।")
+            return None
 
+        textarea.click()
+        grok_page.wait_for_timeout(500)
+        textarea.fill(prompt)
+        grok_page.wait_for_timeout(random.uniform(500, 800))
+
+        sent = False
+        for btn_sel in [
+            'button[aria-label="Send"]',
+            'button[data-testid="grok-send-button"]',
+            'button[type="submit"]',
+        ]:
+            try:
+                btn = grok_page.wait_for_selector(btn_sel, timeout=5000)
+                if btn and btn.is_visible() and btn.is_enabled():
+                    btn.click()
+                    sent = True
+                    break
+            except Exception:
+                continue
+
+        if not sent:
+            grok_page.keyboard.press("Enter")
+
+        print("  ⏳ Grok response এর জন্য অপেক্ষা করছে...")
+        grok_page.wait_for_timeout(15000)
+
+        response_text = ""
+        for attempt in range(20):
+            grok_page.wait_for_timeout(1500)
+            try:
+                els = grok_page.query_selector_all("div.r-1wbh5a2.r-11niif6.r-bnwqim.r-13qz1uu")
+                if els:
+                    for el in reversed(els):
+                        text = el.inner_text().strip()
+                        if text and len(text) > 5 and prompt[:20] not in text:
+                            if any(t in text.lower() for t in [
+                                "thinking about", "let me think", "i'm thinking",
+                                "processing", "considering", "analyzing"
+                            ]):
+                                continue
+                            response_text = text
+                            break
+            except Exception:
+                pass
             if response_text:
-                result = _clean_grok_output(response_text)
-                if result and not _is_grok_refused(result):
-                    print(f"  ✅ Grok caption: {result[:80]}")
-                    return result
-            print("  ⚠️ Grok: response পাওয়া যায়নি।")
+                break
+            try:
+                still_loading = grok_page.query_selector("div.r-g2wd59.r-m5arl1.r-1eu1p3x")
+                if not still_loading and attempt > 3:
+                    break
+            except Exception:
+                pass
+
+        if response_text:
+            result = _clean_grok_output(response_text)
+            if result and not _is_grok_refused(result):
+                print(f"  ✅ Grok caption: {result[:80]}")
+                return result
+        print("  ⚠️ Grok: response পাওয়া যায়নি।")
 
     except Exception as e:
         print(f"  ⚠️ Grok error: {e}")
+    finally:
+        grok_page.close()  # শুধু এই tab বন্ধ — browser/context অক্ষত
+
     return None
 
 # ──────────────────────────────────────────────
@@ -626,17 +620,23 @@ def clean_text(text):
 
 
 def ai_call(prompt):
-    try:
-        response = g4f.ChatCompletion.create(
-            model=g4f.models.default,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        if response:
-            return clean_text(str(response).strip())
-        return None
-    except Exception as e:
-        print(f"  ❌ AI error: {e}")
-        return None
+    # g4f নিজের asyncio loop চালু করে — thread-এ রাখলে main thread-এর
+    # Playwright sync API-র সাথে conflict হয় না
+    result_container = [None]
+    def _run():
+        try:
+            response = g4f.ChatCompletion.create(
+                model=g4f.models.default,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            if response:
+                result_container[0] = clean_text(str(response).strip())
+        except Exception as e:
+            print(f"  ❌ AI error: {e}")
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=30)
+    return result_container[0]
 
 
 # ──────────────────────────────────────────────
@@ -731,7 +731,7 @@ def _trim_no_ellipsis(caption: str, max_chars=217) -> str:
     return portion
 
 
-def build_final_caption(original_text, has_video=False):
+def build_final_caption(original_text, has_video=False, context=None):
     prompt = f"""You are a sharp breaking news editor on X/Twitter.
 
 Task: Rewrite the tweet below, then choose the best label.
@@ -771,7 +771,7 @@ WATCH|Russian Su-35 engages Ukrainian drone — footage now circulating
 Tweet:
 {original_text}"""
 
-    result = generate_caption_with_grok(original_text, has_video)
+    result = generate_caption_with_grok(original_text, has_video, context)
 
     if result:
         if "|" in result:
@@ -1068,7 +1068,7 @@ def perform_post_only(page, posted_cache):
         print(f"  🎥 Video: {has_video}, 🖼 Media: {len(media_paths) if isinstance(media_paths, list) else 0} files")
 
     print("  🤖 Generating caption...")
-    final_caption = build_final_caption(original_text, has_video=has_video)
+    final_caption = build_final_caption(original_text, has_video=has_video, context=page.context)
     if len(final_caption) > 250:
         final_caption = final_caption[:247] + "..."
     print(f"  ✅ Caption: {final_caption}")
@@ -1162,8 +1162,8 @@ def run_bot_loop():
         )
         page = context.new_page()
 
-        # পূর্ণাঙ্গ ফিঙ্গারপ্রিন্ট স্পুফিং
-        page.add_init_script("""
+        # context-level spoofing — এই context থেকে খোলা সব page-এ apply হবে (Grok page সহ)
+        context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
             window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}, app: {}};
