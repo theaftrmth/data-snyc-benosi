@@ -10,15 +10,7 @@ import math
 from datetime import datetime, timezone
 import pytz
 from playwright.sync_api import sync_playwright
-import google.generativeai as genai
-
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    _gemini_model = genai.GenerativeModel("gemini-3.5-flash")
-else:
-    print("⚠️ GEMINI_API_KEY not set.")
-    _gemini_model = None
+import g4f
 
 # ──────────────────────────────────────────────
 # SOURCES (from env SOURCES)
@@ -494,13 +486,12 @@ def clean_text(text):
 
 def ai_call(prompt):
     try:
-        if not _gemini_model:
-            print("  ❌ Gemini model not initialized.")
-            return None
-        response = _gemini_model.generate_content(prompt)
-        text = response.text.strip()
-        if text:
-            return clean_text(text)
+        response = g4f.ChatCompletion.create(
+            model=g4f.models.default,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        if response:
+            return clean_text(str(response).strip())
         return None
     except Exception as e:
         print(f"  ❌ AI error: {e}")
