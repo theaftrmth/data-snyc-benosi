@@ -47,6 +47,7 @@ jobs:
         env:
           SESSION_JSON: ${{ secrets.SESSION_JSON }}
           SOURCES: ${{ secrets.SOURCES }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           HEADLESS: false
           PYTHONUNBUFFERED: 1
         run: xvfb-run python benosi.py
