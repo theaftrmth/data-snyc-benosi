@@ -7,145 +7,10 @@ import requests
 import subprocess
 import json
 import math
-import threading
-import g4f
 from datetime import datetime, timezone
 import pytz
 from playwright.sync_api import sync_playwright
-GROK_REFUSAL_PHRASES = [
-    "i'm sorry", "i cannot", "i can't", "i am unable", "not able to",
-    "inappropriate", "against my", "my guidelines", "i apologize",
-    "as an ai", "i must decline", "i won't", "cannot assist",
-    "thinking about", "let me think", "i'm thinking", "processing your",
-    "considering your", "analyzing your", "working on",
-]
-
-def _is_grok_refused(text: str) -> bool:
-    return len(text) < 8 or any(p in text.lower() for p in GROK_REFUSAL_PHRASES)
-
-def _clean_grok_output(text: str) -> str:
-    text = re.sub(r'^(Rewritten:|Original:|Title:|Output:|Caption:)\s*', "", text, flags=re.IGNORECASE)
-    text = re.sub(r'\*+|_+|`+', "", text)
-    return text.strip().strip('"\' ').strip()
-
-def generate_caption_with_grok(original_text: str, has_video: bool, context=None) -> str | None:
-    if context is None:
-        print("  ⚠️ Grok: context নেই, skip করছি।")
-        return None
-
-    label_instruction = (
-        "VIDEO IS ATTACHED — WATCH label allowed if content fits."
-        if has_video else
-        "NO VIDEO — do NOT use WATCH label."
-    )
-    prompt = (
-        f"You are a breaking news editor for X/Twitter.\n"
-        f"Rewrite the tweet below as a neutral, factual caption under 220 characters.\n"
-        f"- Remove all opinion, bias, and charged political labels\n"
-        f"- Preserve direct quotes from named officials word for word; "
-        f"remove a quote only if it contains politically charged or emotionally loaded language\n"
-        f"- If longer than 220 characters, keep only the single most important fact\n"
-        f"- {label_instruction}\n\n"
-        f"Choose ONE label:\n"
-        f"BREAKING → confirmed, urgent event\n"
-        f"DEVELOPING → situation still unfolding\n"
-        f"WATCH → only if video shows the event\n"
-        f"INTERESTING → surprising fact, not urgent\n\n"
-        f"OUTPUT FORMAT (exactly, nothing else):\n"
-        f"LABEL|rewritten text\n\n"
-        f"Examples:\n"
-        f"BREAKING|Trump warns Iran of consequences unlike anything seen before if nuclear talks fail\n"
-        f"WATCH|Russian Su-35 engages Ukrainian drone — footage now circulating\n\n"
-        f"Tweet: {original_text}"
-    )
-
-    # একই browser context-এ নতুন tab — আলাদা browser নয়
-    grok_page = context.new_page()
-    try:
-        print("  🌐 Grok লোড করছে...")
-        grok_page.goto("https://x.com/i/grok", wait_until="domcontentloaded", timeout=30000)
-        grok_page.wait_for_timeout(3000)
-
-        textarea = None
-        for sel in ['textarea[placeholder="Ask anything"]', 'textarea']:
-            try:
-                el = grok_page.wait_for_selector(sel, timeout=8000)
-                if el and el.is_visible():
-                    textarea = el
-                    break
-            except Exception:
-                continue
-
-        if not textarea:
-            print("  ❌ Grok textarea পাওয়া যায়নি।")
-            return None
-
-        textarea.click()
-        grok_page.wait_for_timeout(500)
-        textarea.fill(prompt)
-        grok_page.wait_for_timeout(random.uniform(500, 800))
-
-        sent = False
-        for btn_sel in [
-            'button[aria-label="Send"]',
-            'button[data-testid="grok-send-button"]',
-            'button[type="submit"]',
-        ]:
-            try:
-                btn = grok_page.wait_for_selector(btn_sel, timeout=5000)
-                if btn and btn.is_visible() and btn.is_enabled():
-                    btn.click()
-                    sent = True
-                    break
-            except Exception:
-                continue
-
-        if not sent:
-            grok_page.keyboard.press("Enter")
-
-        print("  ⏳ Grok response এর জন্য অপেক্ষা করছে...")
-        grok_page.wait_for_timeout(15000)
-
-        response_text = ""
-        for attempt in range(20):
-            grok_page.wait_for_timeout(1500)
-            try:
-                els = grok_page.query_selector_all("div.r-1wbh5a2.r-11niif6.r-bnwqim.r-13qz1uu")
-                if els:
-                    for el in reversed(els):
-                        text = el.inner_text().strip()
-                        if text and len(text) > 5 and prompt[:20] not in text:
-                            if any(t in text.lower() for t in [
-                                "thinking about", "let me think", "i'm thinking",
-                                "processing", "considering", "analyzing"
-                            ]):
-                                continue
-                            response_text = text
-                            break
-            except Exception:
-                pass
-            if response_text:
-                break
-            try:
-                still_loading = grok_page.query_selector("div.r-g2wd59.r-m5arl1.r-1eu1p3x")
-                if not still_loading and attempt > 3:
-                    break
-            except Exception:
-                pass
-
-        if response_text:
-            result = _clean_grok_output(response_text)
-            if result and not _is_grok_refused(result):
-                print(f"  ✅ Grok caption: {result[:80]}")
-                return result
-        print("  ⚠️ Grok: response পাওয়া যায়নি।")
-
-    except Exception as e:
-        print(f"  ⚠️ Grok error: {e}")
-    finally:
-        grok_page.close()  # শুধু এই tab বন্ধ — browser/context অক্ষত
-
-    return None
+import g4f
 
 # ──────────────────────────────────────────────
 # SOURCES (from env SOURCES)
@@ -620,23 +485,17 @@ def clean_text(text):
 
 
 def ai_call(prompt):
-    # g4f নিজের asyncio loop চালু করে — thread-এ রাখলে main thread-এর
-    # Playwright sync API-র সাথে conflict হয় না
-    result_container = [None]
-    def _run():
-        try:
-            response = g4f.ChatCompletion.create(
-                model=g4f.models.default,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            if response:
-                result_container[0] = clean_text(str(response).strip())
-        except Exception as e:
-            print(f"  ❌ AI error: {e}")
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    t.join(timeout=30)
-    return result_container[0]
+    try:
+        response = g4f.ChatCompletion.create(
+            model=g4f.models.default,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        if response:
+            return clean_text(str(response).strip())
+        return None
+    except Exception as e:
+        print(f"  ❌ AI error: {e}")
+        return None
 
 
 # ──────────────────────────────────────────────
@@ -731,7 +590,7 @@ def _trim_no_ellipsis(caption: str, max_chars=217) -> str:
     return portion
 
 
-def build_final_caption(original_text, has_video=False, context=None):
+def build_final_caption(original_text, has_video=False):
     prompt = f"""You are a sharp breaking news editor on X/Twitter.
 
 Task: Rewrite the tweet below, then choose the best label.
@@ -771,7 +630,7 @@ WATCH|Russian Su-35 engages Ukrainian drone — footage now circulating
 Tweet:
 {original_text}"""
 
-    result = generate_caption_with_grok(original_text, has_video, context)
+    result = ai_call(prompt)
 
     if result:
         if "|" in result:
@@ -1068,7 +927,7 @@ def perform_post_only(page, posted_cache):
         print(f"  🎥 Video: {has_video}, 🖼 Media: {len(media_paths) if isinstance(media_paths, list) else 0} files")
 
     print("  🤖 Generating caption...")
-    final_caption = build_final_caption(original_text, has_video=has_video, context=page.context)
+    final_caption = build_final_caption(original_text, has_video=has_video)
     if len(final_caption) > 250:
         final_caption = final_caption[:247] + "..."
     print(f"  ✅ Caption: {final_caption}")
@@ -1162,8 +1021,8 @@ def run_bot_loop():
         )
         page = context.new_page()
 
-        # context-level spoofing — এই context থেকে খোলা সব page-এ apply হবে (Grok page সহ)
-        context.add_init_script("""
+        # পূর্ণাঙ্গ ফিঙ্গারপ্রিন্ট স্পুফিং
+        page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
             window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}, app: {}};
