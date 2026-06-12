@@ -4,3 +4,4 @@ g4f
 pytz
 requests
 yt-dlp
+google-generativeai
