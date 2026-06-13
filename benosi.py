@@ -560,14 +560,7 @@ def _get_perchance_page(context):
     try:
         instr_loc = fl.locator("#instructionEl")
         instr_loc.wait_for(state="visible", timeout=20000)
-        instr_loc.click()
-        page.wait_for_timeout(random.randint(300, 600))
-        page.keyboard.press("Control+A")
-        page.wait_for_timeout(200)
-        page.keyboard.press("Delete")
-        page.wait_for_timeout(random.randint(200, 400))
-        for char in PERCHANCE_SYSTEM_INSTRUCTION:
-            page.keyboard.type(char, delay=random.randint(18, 55))
+        instr_loc.fill(PERCHANCE_SYSTEM_INSTRUCTION)   # instant fill
         page.wait_for_timeout(random.randint(400, 800))
         print("  ✅ Perchance instruction সেট হয়েছে।")
     except Exception as e:
@@ -599,14 +592,7 @@ def ai_call(prompt, _page_context=None):
         try:
             instr_loc = fl.locator("#instructionEl")
             instr_loc.wait_for(state="visible", timeout=10000)
-            instr_loc.click()
-            page.wait_for_timeout(random.randint(200, 400))
-            page.keyboard.press("Control+A")
-            page.wait_for_timeout(150)
-            page.keyboard.press("Delete")
-            page.wait_for_timeout(random.randint(150, 300))
-            for char in prompt:
-                page.keyboard.type(char, delay=random.randint(8, 30))
+            instr_loc.fill(prompt)   # character-by-character টাইপিং বাদ — instant fill
             page.wait_for_timeout(random.randint(300, 600))
         except Exception as e:
             print(f"  ❌ Prompt type করতে পারিনি: {e}")
@@ -623,17 +609,84 @@ def ai_call(prompt, _page_context=None):
             print(f"  ❌ Generate বাটন ক্লিক করতে পারিনি: {e}")
             return None
 
-        # Output আসার জন্য অপেক্ষা — evaluate() দিয়ে পড়ো
-        output = None
-        resp_loc = fl.locator("#responseEl")
-        page.wait_for_timeout(5000)   # generation শুরু হওয়ার জন্য প্রাথমিক অপেক্ষা
-        for attempt in range(60):     # max 60 সেকেন্ড
+        # iframe frame object বের করো — clipboard intercept এর জন্য দরকার
+        output_frame = None
+        for attempt in range(20):
+            page.wait_for_timeout(500)
+            for f in page.frames:
+                if "perchance" in (f.url or "") and f.name != page.main_frame.name:
+                    output_frame = f
+                    break
+                # iframe#outputIframeEl এর child frame
+                if "outputIframe" in (f.name or ""):
+                    output_frame = f
+                    break
+            if output_frame:
+                break
+
+        if not output_frame:
+            # fallback: fl.locator দিয়ে সরাসরি চেষ্টা
+            output_frame = None
+
+        # clipboard.writeText intercept করো — copy বাটন click করলে value ধরা পড়বে
+        if output_frame:
+            try:
+                output_frame.evaluate("""() => {
+                    window.__capturedText = '';
+                    navigator.clipboard.writeText = (text) => {
+                        window.__capturedText = text;
+                        return Promise.resolve();
+                    };
+                }""")
+            except Exception:
+                pass
+
+        # generation শেষ হওয়ার জন্য অপেক্ষা — responseEl খালি থাকলে wait করো
+        print("  ⏳ Perchance output এর জন্য অপেক্ষা...")
+        page.wait_for_timeout(5000)
+        for attempt in range(60):   # max 60 সেকেন্ড
             page.wait_for_timeout(1000)
             try:
-                val = resp_loc.evaluate("el => el.value")
+                # responseEl value সরাসরি চেক করো
+                if output_frame:
+                    val = output_frame.evaluate(
+                        "document.querySelector('#responseEl') ? document.querySelector('#responseEl').value : ''"
+                    )
+                else:
+                    val = fl.locator("#responseEl").evaluate("el => el.value")
+                if val and val.strip() and len(val.strip()) > 5:
+                    break
+            except Exception:
+                val = ""
+
+        output = None
+
+        # copy বাটন click → clipboard intercept থেকে value নাও
+        try:
+            copy_loc = fl.locator("#responseCopyBtn")
+            copy_loc.wait_for(state="visible", timeout=5000)
+            copy_loc.click()
+            page.wait_for_timeout(800)
+            if output_frame:
+                captured = output_frame.evaluate("window.__capturedText || ''")
+                if captured and captured.strip() and len(captured.strip()) > 5:
+                    output = captured.strip()
+                    print(f"  ✅ Clipboard থেকে output পেলাম।")
+        except Exception as e:
+            print(f"  ⚠️ Copy button: {e}")
+
+        # fallback: সরাসরি responseEl value পড়ো
+        if not output:
+            try:
+                if output_frame:
+                    val = output_frame.evaluate(
+                        "document.querySelector('#responseEl') ? document.querySelector('#responseEl').value : ''"
+                    )
+                else:
+                    val = fl.locator("#responseEl").evaluate("el => el.value")
                 if val and val.strip() and len(val.strip()) > 5:
                     output = val.strip()
-                    break
+                    print(f"  ✅ responseEl থেকে output পেলাম।")
             except Exception:
                 pass
 
