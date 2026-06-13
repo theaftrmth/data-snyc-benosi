@@ -593,11 +593,7 @@ def ai_call(prompt, _page_context=None):
         page = _get_perchance_page(_page_context)
         fl = _perchance_fl or page.frame_locator("iframe#outputIframeEl")
 
-        # আগের response clear করো
-        try:
-            fl.locator("#responseEl").fill("")
-        except Exception:
-            pass
+        # আগের response clear করার দরকার নেই — generate হলে নিজেই replace হয়
 
         # Instruction আপডেট করো full prompt দিয়ে
         try:
@@ -627,14 +623,15 @@ def ai_call(prompt, _page_context=None):
             print(f"  ❌ Generate বাটন ক্লিক করতে পারিনি: {e}")
             return None
 
-        # Output আসার জন্য অপেক্ষা
+        # Output আসার জন্য অপেক্ষা — evaluate() দিয়ে পড়ো
         output = None
         resp_loc = fl.locator("#responseEl")
-        for attempt in range(30):
+        page.wait_for_timeout(5000)   # generation শুরু হওয়ার জন্য প্রাথমিক অপেক্ষা
+        for attempt in range(60):     # max 60 সেকেন্ড
             page.wait_for_timeout(1000)
             try:
-                val = resp_loc.input_value()
-                if val and len(val.strip()) > 5:
+                val = resp_loc.evaluate("el => el.value")
+                if val and val.strip() and len(val.strip()) > 5:
                     output = val.strip()
                     break
             except Exception:
