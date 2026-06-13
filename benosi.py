@@ -10,7 +10,7 @@ import math
 from datetime import datetime, timezone
 import pytz
 from playwright.sync_api import sync_playwright
-import g4f
+# g4f replaced by Perchance AI via browser automation
 
 # ──────────────────────────────────────────────
 # SOURCES (from env SOURCES)
@@ -512,17 +512,148 @@ def clean_text(text):
     return text.strip()
 
 
-def ai_call(prompt):
+PERCHANCE_URL = "https://perchance.org/ai-text-generator"
+
+# Perchance instruction (system prompt) — সেট করা হবে একবার, তারপর reuse
+PERCHANCE_SYSTEM_INSTRUCTION = (
+    "You are a sharp, fast-paced breaking news editor on X/Twitter. "
+    "Your job is to flash high-impact, urgent updates in a single, crisp sentence. "
+    "When given a tweet, rewrite it and choose the best label. "
+    "OUTPUT FORMAT (nothing else): LABEL|rewritten text"
+)
+
+# একটা পেজ reuse করার জন্য module-level reference
+_perchance_page = None
+_perchance_context = None
+
+
+def _get_perchance_page(context):
+    """
+    Perchance এর জন্য আলাদা ট্যাব খোলে বা আগেরটা reuse করে।
+    Instruction field একবার সেট করে রাখে।
+    """
+    global _perchance_page, _perchance_context
+
+    # নতুন context হলে আগের পেজ invalid — reset করো
+    if _perchance_context is not context:
+        _perchance_page = None
+        _perchance_context = context
+
+    if _perchance_page is not None:
+        try:
+            # পেজ এখনো জীবিত কিনা চেক করো
+            _ = _perchance_page.url
+            return _perchance_page
+        except Exception:
+            _perchance_page = None
+
+    print("  🌐 Perchance: নতুন ট্যাব খুলছি...")
+    page = context.new_page()
+
+    # human-like: আগে blank tab, তারপর navigate
+    page.wait_for_timeout(random.randint(800, 1500))
+    page.goto(PERCHANCE_URL, wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(random.randint(2000, 3500))
+
+    # Instruction field খুঁজে সেট করো
     try:
-        response = g4f.ChatCompletion.create(
-            model=g4f.models.default,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        if response:
-            return clean_text(str(response).strip())
-        return None
+        instr_el = page.wait_for_selector("#instructionEl", timeout=15000)
+        # আগের content clear করো
+        instr_el.click()
+        page.wait_for_timeout(random.randint(300, 600))
+        page.keyboard.press("Control+A")
+        page.wait_for_timeout(200)
+        page.keyboard.press("Delete")
+        page.wait_for_timeout(random.randint(200, 400))
+
+        # Human-like typing
+        for char in PERCHANCE_SYSTEM_INSTRUCTION:
+            page.keyboard.type(char, delay=random.randint(18, 55))
+        page.wait_for_timeout(random.randint(400, 800))
+        print("  ✅ Perchance instruction সেট হয়েছে।")
     except Exception as e:
-        print(f"  ❌ AI error: {e}")
+        print(f"  ⚠️ Instruction field সেট করতে পারিনি: {e}")
+
+    _perchance_page = page
+    return page
+
+
+def ai_call(prompt, _page_context=None):
+    """
+    Perchance AI তে prompt পাঠায় এবং output ফেরত দেয়।
+    _page_context: playwright BrowserContext (build_final_caption থেকে দেওয়া হয়)
+    """
+    if _page_context is None:
+        print("  ❌ Perchance: browser context নেই, AI call বাদ।")
+        return None
+
+    try:
+        page = _get_perchance_page(_page_context)
+
+        # Output textarea clear করো (আগের response থাকলে)
+        try:
+            resp_el = page.query_selector("#responseEl")
+            if resp_el:
+                page.evaluate("document.querySelector('#responseEl').value = '';")
+        except Exception:
+            pass
+
+        # Prompt type করো instruction field এ নয়, বরং
+        # Perchance এ instruction = system prompt, output = response।
+        # User input নেই আলাদা করে — তাই full prompt টা instruction এ দেবো
+        # এবং প্রতিবার regenerate করবো।
+
+        # Instruction আপডেট করো full prompt দিয়ে
+        try:
+            instr_el = page.wait_for_selector("#instructionEl", timeout=10000)
+            instr_el.click()
+            page.wait_for_timeout(random.randint(200, 400))
+            page.keyboard.press("Control+A")
+            page.wait_for_timeout(150)
+            page.keyboard.press("Delete")
+            page.wait_for_timeout(random.randint(150, 300))
+
+            # Prompt টা type করো (human-like, কিছুটা দ্রুত)
+            for char in prompt:
+                page.keyboard.type(char, delay=random.randint(8, 30))
+
+            page.wait_for_timeout(random.randint(300, 600))
+        except Exception as e:
+            print(f"  ❌ Prompt type করতে পারিনি: {e}")
+            return None
+
+        # Regenerate বাটনে ক্লিক করো
+        try:
+            gen_btn = page.wait_for_selector("#generateBtn", timeout=10000)
+            page.wait_for_timeout(random.randint(400, 800))
+            gen_btn.click()
+            print("  ⏳ Perchance generate করছে...")
+        except Exception as e:
+            print(f"  ❌ Generate বাটন ক্লিক করতে পারিনি: {e}")
+            return None
+
+        # Output আসার জন্য অপেক্ষা করো
+        # responseEl তে content আসলে নেবো (max 30s)
+        output = None
+        for attempt in range(30):
+            page.wait_for_timeout(1000)
+            try:
+                val = page.evaluate("document.querySelector('#responseEl') ? document.querySelector('#responseEl').value.trim() : ''")
+                if val and len(val) > 5:
+                    output = val
+                    break
+            except Exception:
+                pass
+
+        if not output:
+            print("  ❌ Perchance থেকে output পাইনি।")
+            return None
+
+        print(f"  ✅ Perchance output: {output[:80]}...")
+        return clean_text(output)
+
+    except Exception as e:
+        print(f"  ❌ Perchance AI error: {e}")
         return None
 
 
@@ -531,42 +662,17 @@ def ai_call(prompt):
 # ──────────────────────────────────────────────
 
 def ai_select_best_tweet(tweet_list):
+    """
+    Score-based tweet selection (AI call বাদ — Perchance শুধু caption এ ব্যবহার হবে)।
+    সর্বোচ্চ score এর tweet return করে।
+    """
     try:
-        shortlist = []
-        for t in tweet_list:
-            shortlist.append({
-                "source": t["source"],
-                "text": t["text"][:150],
-                "likes": t.get("likes", 0),
-                "age_min": t.get("age_min", 0)
-            })
-        prompt = f"""You are a sharp geopolitical news editor for X/Twitter.
-Below are tweets from breaking news sources. Pick the ONE tweet that is the most newsworthy, urgent, and likely to get high engagement.
-
-STRICT DISQUALIFIERS — skip any tweet that contains:
-- Opinion, editorial commentary, or advocacy (even partially)
-- Loaded/charged labels applied by the source itself: "terrorist", "freedom fighter", "militant", "regime", "occupation", "genocide", "invasion", "liberation" etc. — unless these words appear inside a clearly attributed direct quote from an official body
-- Political takes, blame language, or calls to action
-- Reactions to news rather than the news itself (e.g. "This is outrageous", "We condemn...")
-
-Prefer strictly factual, event-based reporting: what happened, where, who was involved.
-Consider:
-- Global impact, surprise, conflict, diplomatic moves.
-- Uniqueness (not just a reaction).
-- Relevance right now.
-
-Tweets:
-{json.dumps(shortlist, indent=2, ensure_ascii=False)}
-
-Return ONLY the index (0-based) of the best tweet. Nothing else.
-Example: 2"""
-        result = ai_call(prompt)
-        if result and result.strip().isdigit():
-            idx = int(result.strip())
-            if 0 <= idx < len(tweet_list):
-                return tweet_list[idx]
+        if not tweet_list:
+            return None
+        best = max(tweet_list, key=lambda t: t.get("score", 0))
+        return best
     except Exception as e:
-        print(f"  ⚠️ AI post selection error: {e}")
+        print(f"  ⚠️ Tweet selection error: {e}")
     return None
 
 
@@ -618,7 +724,7 @@ def _trim_no_ellipsis(caption: str, max_chars=217) -> str:
     return portion
 
 
-def build_final_caption(original_text, has_video=False):
+def build_final_caption(original_text, has_video=False, browser_context=None):
     prompt = f"""You are a sharp, fast-paced breaking news editor on X/Twitter. Your job is to flash high-impact, urgent updates in a single, crisp sentence.
 
 Task: Rewrite the tweet below into a punchy, conversational, and urgent post, then choose the best label.
@@ -654,7 +760,7 @@ DEVELOPING|Clashes ongoing near Kharkiv as ceasefire talks remain stalled
 Tweet:
 {original_text}"""
 
-    result = ai_call(prompt)
+    result = ai_call(prompt, _page_context=browser_context)
 
     if result:
         if "|" in result:
@@ -979,7 +1085,7 @@ def perform_post_only(page, posted_cache):
         print(f"  🎥 Video: {has_video}, 🖼 Media: {len(media_paths) if isinstance(media_paths, list) else 0} files")
 
     print("  🤖 Generating caption...")
-    final_caption = build_final_caption(original_text, has_video=has_video)
+    final_caption = build_final_caption(original_text, has_video=has_video, browser_context=page.context)
     if len(final_caption) > 250:
         final_caption = final_caption[:247] + "..."
     print(f"  ✅ Caption: {final_caption}")
