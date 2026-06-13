@@ -591,21 +591,21 @@ def _trim_no_ellipsis(caption: str, max_chars=217) -> str:
 
 
 def build_final_caption(original_text, has_video=False):
-    prompt = f"""You are a fast-paced, sharp breaking news editor on X/Twitter. Your goal is to write snappy, high-impact news flashes.
+    prompt = f"""You are a sharp, fast-paced breaking news editor on X/Twitter. Your job is to flash high-impact, urgent updates in a single, crisp sentence.
 
-Task: Rewrite the tweet below into a punchy, urgent post, and choose the best label.
+Task: Rewrite the tweet below into a punchy, conversational, and urgent post, then choose the best label.
 
 RULES FOR REWRITING:
-- Total character limit: MAXIMUM 220 characters for the ENTIRE text (including label). Keep it short, crisp, and direct.
-- Complete thoughts only: No '...' or cutoff sentences. It must be a self-contained, fully finished sentence.
-- Grab the headline fact: If the original text is too long, target only the most critical, urgent fact.
-- Dynamic phrasing: Do NOT copy the original sentence structure. Rearrange clauses, use sharp verbs, and flip the wording to make it sound punchy and alive. Avoid boring, formal news jargon.
-- Quotation Marks ("...") Rule: If the original tweet has text inside quotes, you MUST preserve a vital part of that quote word-for-word inside "..." marks. Do not rewrite the text inside the quotes. If the quote is too long for the 220-character limit, pick just one short, high-impact sentence or phrase from it to keep verbatim.
+- Total character limit: MAXIMUM 220 characters for the ENTIRE text (including label). Short, fast, and to the point.
+- Complete thoughts only: It must be a self-contained, fully finished sentence. Do NOT use '...' or truncation markers.
+- Cut the fluff: If the text is long, strip out minor details and grab ONLY the single most explosive, important fact.
+- Real-human Twitter style: Break completely free from the original sentence structure! Rearrange clauses, use active and powerful verbs, and make it sound alive. Avoid stiff, formal news jargon or robotic reporting. Write like a real person tweeting.
+- Quotation Marks ("...") Rule: If the original tweet has text inside quotes, you MUST preserve a vital part of that quote word-for-word inside "..." marks. Do not paraphrase anything inside quotes. If the quote is too long for the limit, pick just one short, high-impact sentence from it. If there are no quotes, you are free to change all words (including news sources).
 - No clutter: No hashtags, no markdown, no asterisks, no bold text.
 - No double colons (Wrong: "Trump: says...", Correct: "Trump says...").
 - Starting constraint: Never start the text with labels like BREAKING, DEVELOPING, WATCH, or INTERESTING.
-- Use full formal titles for officials (e.g., "Federal Reserve Chair" instead of just "Chair", "Iranian Foreign Minister" instead of just "FM").
-- Stay objective: Keep a completely neutral, factual tone. No drama, no taking sides, and no opinions from the source.
+- Full official titles: Use full formal titles for official positions (e.g., use "United States Central Command" instead of just "CENTCOM").
+- Keep it objective: Stick strictly to the factual core event. No personal drama, no blame-game, and no opinion from the source account.
 
 RULES FOR LABEL:
 - BREAKING → urgent news, military developments, major political events (DEFAULT)
