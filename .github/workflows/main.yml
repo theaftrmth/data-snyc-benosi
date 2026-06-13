@@ -2,6 +2,12 @@ name: Run X Bot
 
 on:
   workflow_dispatch:
+  repository_dispatch:
+    types: [run-bot]
+
+concurrency:
+  group: run-bot-group
+  cancel-in-progress: false
 
 jobs:
   run-bot:
