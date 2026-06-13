@@ -473,6 +473,30 @@ def extract_media_urls_safely(page, tweet_index):
     return media_paths
 
 
+def find_matching_tweet_index(page, target_text, search_range=10):
+    """
+    Timeline order can shift between the initial scan and a later reload of
+    the same profile (e.g. a new post appears in between). Re-locate the
+    tweet whose text matches target_text so media is pulled from the SAME
+    tweet the caption was built from, instead of trusting a stale positional
+    index. Returns the matching index, or None if no match is found.
+    """
+    try:
+        target = target_text.strip()
+        tweets = page.query_selector_all('article[data-testid="tweet"]')
+        for i, tweet in enumerate(tweets[:search_range]):
+            try:
+                text_el = tweet.query_selector('div[data-testid="tweetText"]')
+                txt = text_el.inner_text().strip() if text_el else ""
+                if txt and txt == target:
+                    return i
+            except:
+                continue
+    except Exception as e:
+        print(f"  ⚠️ Tweet re-match error: {e}")
+    return None
+
+
 # ──────────────────────────────────────────────
 # AI
 # ──────────────────────────────────────────────
@@ -481,6 +505,10 @@ def clean_text(text):
     text = re.sub(r'\*+', '', text)
     text = re.sub(r'_+', '', text)
     text = re.sub(r'#+', '', text)
+    # Some AI providers occasionally over-escape quotes in plain text
+    # (e.g. "strange" -> \"strange\"). Strip stray backslash-escapes
+    # so they don't leak into the final caption.
+    text = text.replace('\\"', '"').replace("\\'", "'")
     return text.strip()
 
 
@@ -902,24 +930,52 @@ def perform_post_only(page, posted_cache):
     has_video = False
     media_paths = []
     if reloaded:
-        has_video = check_video_in_article(page, best_idx)
-        media_paths = extract_media_urls_safely(page, best_idx)
-        if media_paths == "TOO_LARGE":
-            print("  ⏭ Video too large, trying next best candidate...")
-            remaining = [c for c in candidates if c != best_tweet]
-            if not remaining:
-                print("  ❌ No more candidates.")
-                return False
-            best_tweet = max(remaining, key=lambda x: x['score'])
-            original_text = best_tweet['text']
-            chosen_source = best_tweet['source']
-            best_idx = best_tweet['index']
-            print(f"  🔄 New selection: @{chosen_source} | {original_text[:80]}...")
+        # The selected tweet's position can shift on this fresh page load
+        # (e.g. the source posted something new while other sources were
+        # being checked). Re-find it by text so media matches the caption.
+        page_source = chosen_source
+        matched_idx = find_matching_tweet_index(page, original_text)
+        if matched_idx is None:
+            print("  ⚠️ Couldn't relocate the selected tweet after reload (timeline shifted). Posting text-only.")
+        else:
+            best_idx = matched_idx
             has_video = check_video_in_article(page, best_idx)
             media_paths = extract_media_urls_safely(page, best_idx)
+
             if media_paths == "TOO_LARGE":
-                print("  ⚠️ Next candidate also too large, posting text only.")
-                media_paths = []
+                print("  ⏭ Video too large, trying next best candidate...")
+                remaining = [c for c in candidates if c != best_tweet]
+                if not remaining:
+                    print("  ❌ No more candidates.")
+                    return False
+                best_tweet = max(remaining, key=lambda x: x['score'])
+                original_text = best_tweet['text']
+                chosen_source = best_tweet['source']
+                best_idx = best_tweet['index']
+                print(f"  🔄 New selection: @{chosen_source} | {original_text[:80]}...")
+
+                if chosen_source != page_source:
+                    try:
+                        page.goto(f"https://x.com/{chosen_source}", wait_until="domcontentloaded", timeout=60000)
+                        page.wait_for_timeout(random.randint(3000, 5000))
+                        page_source = chosen_source
+                    except:
+                        pass
+
+                matched_idx = find_matching_tweet_index(page, original_text)
+                if matched_idx is None:
+                    print("  ⚠️ Couldn't relocate next candidate either, posting text-only.")
+                    has_video = False
+                    media_paths = []
+                else:
+                    best_idx = matched_idx
+                    has_video = check_video_in_article(page, best_idx)
+                    media_paths = extract_media_urls_safely(page, best_idx)
+                    if media_paths == "TOO_LARGE":
+                        print("  ⚠️ Next candidate also too large, posting text only.")
+                        media_paths = []
+                        has_video = False
+
         print(f"  🎥 Video: {has_video}, 🖼 Media: {len(media_paths) if isinstance(media_paths, list) else 0} files")
 
     print("  🤖 Generating caption...")
