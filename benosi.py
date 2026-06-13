@@ -591,41 +591,37 @@ def _trim_no_ellipsis(caption: str, max_chars=217) -> str:
 
 
 def build_final_caption(original_text, has_video=False):
-    prompt = f"""You are a sharp breaking news editor on X/Twitter.
+    prompt = f"""You are a fast-paced, sharp breaking news editor on X/Twitter. Your goal is to write snappy, high-impact news flashes.
 
-Task: Rewrite the tweet below, then choose the best label.
+Task: Rewrite the tweet below into a punchy, urgent post, and choose the best label.
 
 RULES FOR REWRITING:
-- **Your ENTIRE rewritten text must be 220 characters or fewer. Do NOT exceed this limit.**
-- **Do NOT use '...' or any truncation markers. Your output must be a complete, self-contained sentence.**
-- If the original is longer than 220 characters, pick ONLY the most important fact and express it fully under 220 characters.
-- Keep the same meaning, make it punchy and urgent.
-- No hashtags, no markdown, no asterisks, no bold.
-- Preserve direct quotes word for word from named officials or institutions — do NOT paraphrase or rephrase quoted speech. Only remove a quote entirely if it contains politically charged, contested, or emotionally loaded language — in that case replace the whole quote with a neutral factual description instead.
-- Avoid double colon (wrong: "Trump: says...", correct: "Trump says...").
-- Do NOT start the rewritten text with BREAKING, DEVELOPING, WATCH, or INTERESTING.
-- When mentioning official positions, use the full formal title (e.g., "Federal Reserve Chair" not just "Chair").
-- Maintain a strictly neutral, factual tone. Do not take sides. Do not reflect the source account opinion or framing.
-- Never use politically charged, contested, or emotionally loaded labels for groups, actions, or events — even if the source tweet uses them. Instead, describe what happened or who did what in plain factual terms (e.g. instead of a group identity label, say what the group did; instead of a contested event label, describe the event neutrally).
-- Do NOT carry over political commentary, blame language, or any opinion from the source tweet — rewrite only the factual core event.
-- Paraphrase naturally in simple words. Sound like a real human, not a news bot.
+- Total character limit: MAXIMUM 220 characters for the ENTIRE text (including label). Keep it short, crisp, and direct.
+- Complete thoughts only: No '...' or cutoff sentences. It must be a self-contained, fully finished sentence.
+- Grab the headline fact: If the original text is too long, target only the most critical, urgent fact.
+- Dynamic phrasing: Do NOT copy the original sentence structure. Rearrange clauses, use sharp verbs, and flip the wording to make it sound punchy and alive. Avoid boring, formal news jargon.
+- Quotation Marks ("...") Rule: If the original tweet has text inside quotes, you MUST preserve a vital part of that quote word-for-word inside "..." marks. Do not rewrite the text inside the quotes. If the quote is too long for the 220-character limit, pick just one short, high-impact sentence or phrase from it to keep verbatim.
+- No clutter: No hashtags, no markdown, no asterisks, no bold text.
+- No double colons (Wrong: "Trump: says...", Correct: "Trump says...").
+- Starting constraint: Never start the text with labels like BREAKING, DEVELOPING, WATCH, or INTERESTING.
+- Use full formal titles for officials (e.g., "Federal Reserve Chair" instead of just "Chair", "Iranian Foreign Minister" instead of just "FM").
+- Stay objective: Keep a completely neutral, factual tone. No drama, no taking sides, and no opinions from the source.
 
 RULES FOR LABEL:
-- BREAKING → urgent news, military action, major political event (DEFAULT)
-- DEVELOPING → situation still unfolding
-- WATCH → ONLY if this tweet has VIDEO showing the event
-- INTERESTING → surprising fact, not urgent
+- BREAKING → urgent news, military developments, major political events (DEFAULT)
+- DEVELOPING → active, fast-changing situations
+- INTERESTING → surprising facts, but not immediately urgent
+- WATCH → ONLY if the tweet has video footage
 
-{"VIDEO IS ATTACHED — WATCH label allowed if content fits." if has_video else "NO VIDEO — do NOT use WATCH, use BREAKING instead."}
+{"VIDEO ATTACHED — WATCH label is allowed if it fits." if has_video else "NO VIDEO ATTACHED — do NOT use WATCH. Use BREAKING instead."}
 
-OUTPUT FORMAT (exactly, nothing else):
+OUTPUT FORMAT (Strictly match this layout, nothing else):
 LABEL|rewritten text
 
 Examples:
 BREAKING|Trump warns Iran of consequences unlike anything seen before if nuclear talks fail
 INTERESTING|North Korea quietly tested a new ICBM variant — US intel confirms
 DEVELOPING|Clashes ongoing near Kharkiv as ceasefire talks remain stalled
-WATCH|Russian Su-35 engages Ukrainian drone — footage now circulating
 
 Tweet:
 {original_text}"""
