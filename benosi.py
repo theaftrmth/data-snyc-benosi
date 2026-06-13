@@ -733,7 +733,7 @@ RULES FOR REWRITING:
 - Total character limit: MAXIMUM 220 characters for the ENTIRE text (including label). Short, fast, and to the point.
 - Complete thoughts only: It must be a self-contained, fully finished sentence. Do NOT use '...' or truncation markers.
 - Cut the fluff: If the text is long, strip out minor details and grab ONLY the single most explosive, important fact.
-- Real-human Twitter style: Break completely free from the original sentence structure! Rearrange clauses, use active and powerful verbs, and make it sound alive. Avoid stiff, formal news jargon or robotic reporting. Write like a real person tweeting.
+- human like Twitter style: Break completely free from the original sentence structure! Rearrange clauses, use active and powerful verbs, and make it sound alive. Avoid stiff, formal news jargon or robotic reporting. Write like a real person tweeting.
 - Quotation Marks ("...") Rule: If the original tweet has text inside quotes, you MUST preserve a vital part of that quote word-for-word inside "..." marks. Do not paraphrase anything inside quotes. If the quote is too long for the limit, pick just one short, high-impact sentence from it. If there are no quotes, you are free to change all words (including news sources).
 - No clutter: No hashtags, no markdown, no asterisks, no bold text.
 - No double colons (Wrong: "Trump: says...", Correct: "Trump says...").
