@@ -524,7 +524,21 @@ PERCHANCE_SYSTEM_INSTRUCTION = (
 
 # একটা পেজ reuse করার জন্য module-level reference
 _perchance_page = None
+_perchance_frame = None   # iframe frame object
 _perchance_context = None
+
+
+def _get_output_frame(page):
+    """iframe#outputIframeEl এর ভেতরের frame object ফেরত দেয়।"""
+    try:
+        page.wait_for_selector("iframe#outputIframeEl", timeout=20000)
+        page.wait_for_timeout(1500)
+        for f in page.frames:
+            if f is not page.main_frame:
+                return f
+    except Exception as e:
+        print(f"  ⚠️ Output iframe পাওয়া যায়নি: {e}")
+    return None
 
 
 def _get_perchance_page(context):
@@ -532,41 +546,43 @@ def _get_perchance_page(context):
     Perchance এর জন্য আলাদা ট্যাব খোলে বা আগেরটা reuse করে।
     Instruction field একবার সেট করে রাখে।
     """
-    global _perchance_page, _perchance_context
+    global _perchance_page, _perchance_frame, _perchance_context
 
     # নতুন context হলে আগের পেজ invalid — reset করো
     if _perchance_context is not context:
         _perchance_page = None
+        _perchance_frame = None
         _perchance_context = context
 
     if _perchance_page is not None:
         try:
-            # পেজ এখনো জীবিত কিনা চেক করো
             _ = _perchance_page.url
             return _perchance_page
         except Exception:
             _perchance_page = None
+            _perchance_frame = None
 
     print("  🌐 Perchance: নতুন ট্যাব খুলছি...")
     page = context.new_page()
-
-    # human-like: আগে blank tab, তারপর navigate
     page.wait_for_timeout(random.randint(800, 1500))
     page.goto(PERCHANCE_URL, wait_until="domcontentloaded", timeout=60000)
     page.wait_for_timeout(random.randint(2000, 3500))
 
-    # Instruction field খুঁজে সেট করো
+    # iframe frame object নাও
+    frame = _get_output_frame(page)
+    if not frame:
+        print("  ⚠️ iframe পাওয়া যায়নি।")
+        frame = page  # fallback
+
+    # Instruction field খুঁজে সেট করো — iframe এর ভেতরে
     try:
-        instr_el = page.wait_for_selector("#instructionEl", timeout=15000)
-        # আগের content clear করো
+        instr_el = frame.wait_for_selector("#instructionEl", timeout=15000)
         instr_el.click()
         page.wait_for_timeout(random.randint(300, 600))
         page.keyboard.press("Control+A")
         page.wait_for_timeout(200)
         page.keyboard.press("Delete")
         page.wait_for_timeout(random.randint(200, 400))
-
-        # Human-like typing
         for char in PERCHANCE_SYSTEM_INSTRUCTION:
             page.keyboard.type(char, delay=random.randint(18, 55))
         page.wait_for_timeout(random.randint(400, 800))
@@ -575,6 +591,7 @@ def _get_perchance_page(context):
         print(f"  ⚠️ Instruction field সেট করতে পারিনি: {e}")
 
     _perchance_page = page
+    _perchance_frame = frame
     return page
 
 
@@ -583,48 +600,41 @@ def ai_call(prompt, _page_context=None):
     Perchance AI তে prompt পাঠায় এবং output ফেরত দেয়।
     _page_context: playwright BrowserContext (build_final_caption থেকে দেওয়া হয়)
     """
+    global _perchance_frame
+
     if _page_context is None:
         print("  ❌ Perchance: browser context নেই, AI call বাদ।")
         return None
 
     try:
         page = _get_perchance_page(_page_context)
+        frame = _perchance_frame or page  # iframe frame ব্যবহার করো
 
-        # Output textarea clear করো (আগের response থাকলে)
+        # Output textarea clear করো
         try:
-            resp_el = page.query_selector("#responseEl")
-            if resp_el:
-                page.evaluate("document.querySelector('#responseEl').value = '';")
+            frame.evaluate("document.querySelector('#responseEl') && (document.querySelector('#responseEl').value = '')")
         except Exception:
             pass
 
-        # Prompt type করো instruction field এ নয়, বরং
-        # Perchance এ instruction = system prompt, output = response।
-        # User input নেই আলাদা করে — তাই full prompt টা instruction এ দেবো
-        # এবং প্রতিবার regenerate করবো।
-
-        # Instruction আপডেট করো full prompt দিয়ে
+        # Instruction আপডেট করো full prompt দিয়ে — iframe এর ভেতরে
         try:
-            instr_el = page.wait_for_selector("#instructionEl", timeout=10000)
+            instr_el = frame.wait_for_selector("#instructionEl", timeout=10000)
             instr_el.click()
             page.wait_for_timeout(random.randint(200, 400))
             page.keyboard.press("Control+A")
             page.wait_for_timeout(150)
             page.keyboard.press("Delete")
             page.wait_for_timeout(random.randint(150, 300))
-
-            # Prompt টা type করো (human-like, কিছুটা দ্রুত)
             for char in prompt:
                 page.keyboard.type(char, delay=random.randint(8, 30))
-
             page.wait_for_timeout(random.randint(300, 600))
         except Exception as e:
             print(f"  ❌ Prompt type করতে পারিনি: {e}")
             return None
 
-        # Regenerate বাটনে ক্লিক করো
+        # Regenerate বাটন — iframe এর ভেতরে
         try:
-            gen_btn = page.wait_for_selector("#generateBtn", timeout=10000)
+            gen_btn = frame.wait_for_selector("#generateBtn", timeout=10000)
             page.wait_for_timeout(random.randint(400, 800))
             gen_btn.click()
             print("  ⏳ Perchance generate করছে...")
@@ -632,13 +642,12 @@ def ai_call(prompt, _page_context=None):
             print(f"  ❌ Generate বাটন ক্লিক করতে পারিনি: {e}")
             return None
 
-        # Output আসার জন্য অপেক্ষা করো
-        # responseEl তে content আসলে নেবো (max 30s)
+        # Output আসার জন্য অপেক্ষা — iframe evaluate
         output = None
         for attempt in range(30):
             page.wait_for_timeout(1000)
             try:
-                val = page.evaluate("document.querySelector('#responseEl') ? document.querySelector('#responseEl').value.trim() : ''")
+                val = frame.evaluate("document.querySelector('#responseEl') ? document.querySelector('#responseEl').value.trim() : ''")
                 if val and len(val) > 5:
                     output = val
                     break
@@ -733,7 +742,7 @@ RULES FOR REWRITING:
 - Total character limit: MAXIMUM 220 characters for the ENTIRE text (including label). Short, fast, and to the point.
 - Complete thoughts only: It must be a self-contained, fully finished sentence. Do NOT use '...' or truncation markers.
 - Cut the fluff: If the text is long, strip out minor details and grab ONLY the single most explosive, important fact.
-- human like Twitter style: Break completely free from the original sentence structure! Rearrange clauses, use active and powerful verbs, and make it sound alive. Avoid stiff, formal news jargon or robotic reporting. Write like a real person tweeting.
+- Real-human Twitter style: Break completely free from the original sentence structure! Rearrange clauses, use active and powerful verbs, and make it sound alive. Avoid stiff, formal news jargon or robotic reporting. Write like a real person tweeting.
 - Quotation Marks ("...") Rule: If the original tweet has text inside quotes, you MUST preserve a vital part of that quote word-for-word inside "..." marks. Do not paraphrase anything inside quotes. If the quote is too long for the limit, pick just one short, high-impact sentence from it. If there are no quotes, you are free to change all words (including news sources).
 - No clutter: No hashtags, no markdown, no asterisks, no bold text.
 - No double colons (Wrong: "Trump: says...", Correct: "Trump says...").
