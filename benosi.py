@@ -524,21 +524,8 @@ PERCHANCE_SYSTEM_INSTRUCTION = (
 
 # একটা পেজ reuse করার জন্য module-level reference
 _perchance_page = None
-_perchance_frame = None   # iframe frame object
+_perchance_fl = None      # FrameLocator for iframe#outputIframeEl
 _perchance_context = None
-
-
-def _get_output_frame(page):
-    """iframe#outputIframeEl এর ভেতরের frame object ফেরত দেয়।"""
-    try:
-        page.wait_for_selector("iframe#outputIframeEl", timeout=20000)
-        page.wait_for_timeout(1500)
-        for f in page.frames:
-            if f is not page.main_frame:
-                return f
-    except Exception as e:
-        print(f"  ⚠️ Output iframe পাওয়া যায়নি: {e}")
-    return None
 
 
 def _get_perchance_page(context):
@@ -546,12 +533,11 @@ def _get_perchance_page(context):
     Perchance এর জন্য আলাদা ট্যাব খোলে বা আগেরটা reuse করে।
     Instruction field একবার সেট করে রাখে।
     """
-    global _perchance_page, _perchance_frame, _perchance_context
+    global _perchance_page, _perchance_fl, _perchance_context
 
-    # নতুন context হলে আগের পেজ invalid — reset করো
     if _perchance_context is not context:
         _perchance_page = None
-        _perchance_frame = None
+        _perchance_fl = None
         _perchance_context = context
 
     if _perchance_page is not None:
@@ -560,7 +546,7 @@ def _get_perchance_page(context):
             return _perchance_page
         except Exception:
             _perchance_page = None
-            _perchance_frame = None
+            _perchance_fl = None
 
     print("  🌐 Perchance: নতুন ট্যাব খুলছি...")
     page = context.new_page()
@@ -568,16 +554,13 @@ def _get_perchance_page(context):
     page.goto(PERCHANCE_URL, wait_until="domcontentloaded", timeout=60000)
     page.wait_for_timeout(random.randint(2000, 3500))
 
-    # iframe frame object নাও
-    frame = _get_output_frame(page)
-    if not frame:
-        print("  ⚠️ iframe পাওয়া যায়নি।")
-        frame = page  # fallback
+    # frame_locator — সরাসরি iframe#outputIframeEl টার্গেট করে
+    fl = page.frame_locator("iframe#outputIframeEl")
 
-    # Instruction field খুঁজে সেট করো — iframe এর ভেতরে
     try:
-        instr_el = frame.wait_for_selector("#instructionEl", timeout=15000)
-        instr_el.click()
+        instr_loc = fl.locator("#instructionEl")
+        instr_loc.wait_for(state="visible", timeout=20000)
+        instr_loc.click()
         page.wait_for_timeout(random.randint(300, 600))
         page.keyboard.press("Control+A")
         page.wait_for_timeout(200)
@@ -591,7 +574,7 @@ def _get_perchance_page(context):
         print(f"  ⚠️ Instruction field সেট করতে পারিনি: {e}")
 
     _perchance_page = page
-    _perchance_frame = frame
+    _perchance_fl = fl
     return page
 
 
@@ -600,7 +583,7 @@ def ai_call(prompt, _page_context=None):
     Perchance AI তে prompt পাঠায় এবং output ফেরত দেয়।
     _page_context: playwright BrowserContext (build_final_caption থেকে দেওয়া হয়)
     """
-    global _perchance_frame
+    global _perchance_fl
 
     if _page_context is None:
         print("  ❌ Perchance: browser context নেই, AI call বাদ।")
@@ -608,18 +591,19 @@ def ai_call(prompt, _page_context=None):
 
     try:
         page = _get_perchance_page(_page_context)
-        frame = _perchance_frame or page  # iframe frame ব্যবহার করো
+        fl = _perchance_fl or page.frame_locator("iframe#outputIframeEl")
 
-        # Output textarea clear করো
+        # আগের response clear করো
         try:
-            frame.evaluate("document.querySelector('#responseEl') && (document.querySelector('#responseEl').value = '')")
+            fl.locator("#responseEl").fill("")
         except Exception:
             pass
 
-        # Instruction আপডেট করো full prompt দিয়ে — iframe এর ভেতরে
+        # Instruction আপডেট করো full prompt দিয়ে
         try:
-            instr_el = frame.wait_for_selector("#instructionEl", timeout=10000)
-            instr_el.click()
+            instr_loc = fl.locator("#instructionEl")
+            instr_loc.wait_for(state="visible", timeout=10000)
+            instr_loc.click()
             page.wait_for_timeout(random.randint(200, 400))
             page.keyboard.press("Control+A")
             page.wait_for_timeout(150)
@@ -632,24 +616,26 @@ def ai_call(prompt, _page_context=None):
             print(f"  ❌ Prompt type করতে পারিনি: {e}")
             return None
 
-        # Regenerate বাটন — iframe এর ভেতরে
+        # Regenerate বাটনে ক্লিক
         try:
-            gen_btn = frame.wait_for_selector("#generateBtn", timeout=10000)
+            gen_loc = fl.locator("#generateBtn")
+            gen_loc.wait_for(state="visible", timeout=10000)
             page.wait_for_timeout(random.randint(400, 800))
-            gen_btn.click()
+            gen_loc.click()
             print("  ⏳ Perchance generate করছে...")
         except Exception as e:
             print(f"  ❌ Generate বাটন ক্লিক করতে পারিনি: {e}")
             return None
 
-        # Output আসার জন্য অপেক্ষা — iframe evaluate
+        # Output আসার জন্য অপেক্ষা
         output = None
+        resp_loc = fl.locator("#responseEl")
         for attempt in range(30):
             page.wait_for_timeout(1000)
             try:
-                val = frame.evaluate("document.querySelector('#responseEl') ? document.querySelector('#responseEl').value.trim() : ''")
-                if val and len(val) > 5:
-                    output = val
+                val = resp_loc.input_value()
+                if val and len(val.strip()) > 5:
+                    output = val.strip()
                     break
             except Exception:
                 pass
