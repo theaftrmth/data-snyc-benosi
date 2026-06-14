@@ -10,7 +10,7 @@ import math
 from datetime import datetime, timezone
 import pytz
 from playwright.sync_api import sync_playwright
-# g4f replaced by Perchance AI via browser automation
+import g4f
 
 # ──────────────────────────────────────────────
 # SOURCES (from env SOURCES)
@@ -512,193 +512,17 @@ def clean_text(text):
     return text.strip()
 
 
-PERCHANCE_URL = "https://perchance.org/ai-text-generator"
-
-# Perchance instruction (system prompt) — সেট করা হবে একবার, তারপর reuse
-PERCHANCE_SYSTEM_INSTRUCTION = (
-    "You are a sharp, fast-paced breaking news editor on X/Twitter. "
-    "Your job is to flash high-impact, urgent updates in a single, crisp sentence. "
-    "When given a tweet, rewrite it and choose the best label. "
-    "OUTPUT FORMAT (nothing else): LABEL|rewritten text"
-)
-
-# একটা পেজ reuse করার জন্য module-level reference
-_perchance_page = None
-_perchance_fl = None      # FrameLocator for iframe#outputIframeEl
-_perchance_context = None
-
-
-def _get_perchance_page(context):
-    """
-    Perchance এর জন্য আলাদা ট্যাব খোলে বা আগেরটা reuse করে।
-    Instruction field একবার সেট করে রাখে।
-    """
-    global _perchance_page, _perchance_fl, _perchance_context
-
-    if _perchance_context is not context:
-        _perchance_page = None
-        _perchance_fl = None
-        _perchance_context = context
-
-    if _perchance_page is not None:
-        try:
-            _ = _perchance_page.url
-            return _perchance_page
-        except Exception:
-            _perchance_page = None
-            _perchance_fl = None
-
-    print("  🌐 Perchance: নতুন ট্যাব খুলছি...")
-    page = context.new_page()
-    page.wait_for_timeout(random.randint(800, 1500))
-    page.goto(PERCHANCE_URL, wait_until="domcontentloaded", timeout=60000)
-    page.wait_for_timeout(random.randint(2000, 3500))
-
-    # frame_locator — সরাসরি iframe#outputIframeEl টার্গেট করে
-    fl = page.frame_locator("iframe#outputIframeEl")
-
+def ai_call(prompt):
     try:
-        instr_loc = fl.locator("#instructionEl")
-        instr_loc.wait_for(state="visible", timeout=20000)
-        instr_loc.fill(PERCHANCE_SYSTEM_INSTRUCTION)   # instant fill
-        page.wait_for_timeout(random.randint(400, 800))
-        print("  ✅ Perchance instruction সেট হয়েছে।")
-    except Exception as e:
-        print(f"  ⚠️ Instruction field সেট করতে পারিনি: {e}")
-
-    _perchance_page = page
-    _perchance_fl = fl
-    return page
-
-
-def ai_call(prompt, _page_context=None):
-    """
-    Perchance AI তে prompt পাঠায় এবং output ফেরত দেয়।
-    _page_context: playwright BrowserContext (build_final_caption থেকে দেওয়া হয়)
-    """
-    global _perchance_fl
-
-    if _page_context is None:
-        print("  ❌ Perchance: browser context নেই, AI call বাদ।")
+        response = g4f.ChatCompletion.create(
+            model=g4f.models.default,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        if response:
+            return clean_text(str(response).strip())
         return None
-
-    try:
-        page = _get_perchance_page(_page_context)
-        fl = _perchance_fl or page.frame_locator("iframe#outputIframeEl")
-
-        # আগের response clear করার দরকার নেই — generate হলে নিজেই replace হয়
-
-        # Instruction আপডেট করো full prompt দিয়ে
-        try:
-            instr_loc = fl.locator("#instructionEl")
-            instr_loc.wait_for(state="visible", timeout=10000)
-            instr_loc.fill(prompt)   # character-by-character টাইপিং বাদ — instant fill
-            page.wait_for_timeout(random.randint(300, 600))
-        except Exception as e:
-            print(f"  ❌ Prompt type করতে পারিনি: {e}")
-            return None
-
-        # Regenerate বাটনে ক্লিক
-        try:
-            gen_loc = fl.locator("#generateBtn")
-            gen_loc.wait_for(state="visible", timeout=10000)
-            page.wait_for_timeout(random.randint(400, 800))
-            gen_loc.click()
-            print("  ⏳ Perchance generate করছে...")
-        except Exception as e:
-            print(f"  ❌ Generate বাটন ক্লিক করতে পারিনি: {e}")
-            return None
-
-        # iframe frame object বের করো — clipboard intercept এর জন্য দরকার
-        output_frame = None
-        for attempt in range(20):
-            page.wait_for_timeout(500)
-            for f in page.frames:
-                if "perchance" in (f.url or "") and f.name != page.main_frame.name:
-                    output_frame = f
-                    break
-                # iframe#outputIframeEl এর child frame
-                if "outputIframe" in (f.name or ""):
-                    output_frame = f
-                    break
-            if output_frame:
-                break
-
-        if not output_frame:
-            # fallback: fl.locator দিয়ে সরাসরি চেষ্টা
-            output_frame = None
-
-        # clipboard.writeText intercept করো — copy বাটন click করলে value ধরা পড়বে
-        if output_frame:
-            try:
-                output_frame.evaluate("""() => {
-                    window.__capturedText = '';
-                    navigator.clipboard.writeText = (text) => {
-                        window.__capturedText = text;
-                        return Promise.resolve();
-                    };
-                }""")
-            except Exception:
-                pass
-
-        # generation শেষ হওয়ার জন্য অপেক্ষা — responseEl খালি থাকলে wait করো
-        print("  ⏳ Perchance output এর জন্য অপেক্ষা...")
-        page.wait_for_timeout(5000)
-        for attempt in range(60):   # max 60 সেকেন্ড
-            page.wait_for_timeout(1000)
-            try:
-                # responseEl value সরাসরি চেক করো
-                if output_frame:
-                    val = output_frame.evaluate(
-                        "document.querySelector('#responseEl') ? document.querySelector('#responseEl').value : ''"
-                    )
-                else:
-                    val = fl.locator("#responseEl").evaluate("el => el.value")
-                if val and val.strip() and len(val.strip()) > 5:
-                    break
-            except Exception:
-                val = ""
-
-        output = None
-
-        # copy বাটন click → clipboard intercept থেকে value নাও
-        try:
-            copy_loc = fl.locator("#responseCopyBtn")
-            copy_loc.wait_for(state="visible", timeout=5000)
-            copy_loc.click()
-            page.wait_for_timeout(800)
-            if output_frame:
-                captured = output_frame.evaluate("window.__capturedText || ''")
-                if captured and captured.strip() and len(captured.strip()) > 5:
-                    output = captured.strip()
-                    print(f"  ✅ Clipboard থেকে output পেলাম।")
-        except Exception as e:
-            print(f"  ⚠️ Copy button: {e}")
-
-        # fallback: সরাসরি responseEl value পড়ো
-        if not output:
-            try:
-                if output_frame:
-                    val = output_frame.evaluate(
-                        "document.querySelector('#responseEl') ? document.querySelector('#responseEl').value : ''"
-                    )
-                else:
-                    val = fl.locator("#responseEl").evaluate("el => el.value")
-                if val and val.strip() and len(val.strip()) > 5:
-                    output = val.strip()
-                    print(f"  ✅ responseEl থেকে output পেলাম।")
-            except Exception:
-                pass
-
-        if not output:
-            print("  ❌ Perchance থেকে output পাইনি।")
-            return None
-
-        print(f"  ✅ Perchance output: {output[:80]}...")
-        return clean_text(output)
-
     except Exception as e:
-        print(f"  ❌ Perchance AI error: {e}")
+        print(f"  ❌ AI error: {e}")
         return None
 
 
@@ -707,17 +531,42 @@ def ai_call(prompt, _page_context=None):
 # ──────────────────────────────────────────────
 
 def ai_select_best_tweet(tweet_list):
-    """
-    Score-based tweet selection (AI call বাদ — Perchance শুধু caption এ ব্যবহার হবে)।
-    সর্বোচ্চ score এর tweet return করে।
-    """
     try:
-        if not tweet_list:
-            return None
-        best = max(tweet_list, key=lambda t: t.get("score", 0))
-        return best
+        shortlist = []
+        for t in tweet_list:
+            shortlist.append({
+                "source": t["source"],
+                "text": t["text"][:150],
+                "likes": t.get("likes", 0),
+                "age_min": t.get("age_min", 0)
+            })
+        prompt = f"""You are a sharp geopolitical news editor for X/Twitter.
+Below are tweets from breaking news sources. Pick the ONE tweet that is the most newsworthy, urgent, and likely to get high engagement.
+
+STRICT DISQUALIFIERS — skip any tweet that contains:
+- Opinion, editorial commentary, or advocacy (even partially)
+- Loaded/charged labels applied by the source itself: "terrorist", "freedom fighter", "militant", "regime", "occupation", "genocide", "invasion", "liberation" etc. — unless these words appear inside a clearly attributed direct quote from an official body
+- Political takes, blame language, or calls to action
+- Reactions to news rather than the news itself (e.g. "This is outrageous", "We condemn...")
+
+Prefer strictly factual, event-based reporting: what happened, where, who was involved.
+Consider:
+- Global impact, surprise, conflict, diplomatic moves.
+- Uniqueness (not just a reaction).
+- Relevance right now.
+
+Tweets:
+{json.dumps(shortlist, indent=2, ensure_ascii=False)}
+
+Return ONLY the index (0-based) of the best tweet. Nothing else.
+Example: 2"""
+        result = ai_call(prompt)
+        if result and result.strip().isdigit():
+            idx = int(result.strip())
+            if 0 <= idx < len(tweet_list):
+                return tweet_list[idx]
     except Exception as e:
-        print(f"  ⚠️ Tweet selection error: {e}")
+        print(f"  ⚠️ AI post selection error: {e}")
     return None
 
 
@@ -769,7 +618,7 @@ def _trim_no_ellipsis(caption: str, max_chars=217) -> str:
     return portion
 
 
-def build_final_caption(original_text, has_video=False, browser_context=None):
+def build_final_caption(original_text, has_video=False):
     prompt = f"""You are a sharp, fast-paced breaking news editor on X/Twitter. Your job is to flash high-impact, urgent updates in a single, crisp sentence.
 
 Task: Rewrite the tweet below into a punchy, conversational, and urgent post, then choose the best label.
@@ -778,7 +627,7 @@ RULES FOR REWRITING:
 - Total character limit: MAXIMUM 220 characters for the ENTIRE text (including label). Short, fast, and to the point.
 - Complete thoughts only: It must be a self-contained, fully finished sentence. Do NOT use '...' or truncation markers.
 - Cut the fluff: If the text is long, strip out minor details and grab ONLY the single most explosive, important fact.
-- Real-human Twitter style: Break completely free from the original sentence structure! Rearrange clauses, use active and powerful verbs, and make it sound alive. Avoid stiff, formal news jargon or robotic reporting. Write like a real person tweeting.
+- Human like Twitter style: Break completely free from the original sentence structure! Rearrange clauses, use active and powerful verbs, and make it sound alive. Avoid stiff, formal news jargon or robotic reporting. Write like a real person tweeting.
 - Quotation Marks ("...") Rule: If the original tweet has text inside quotes, you MUST preserve a vital part of that quote word-for-word inside "..." marks. Do not paraphrase anything inside quotes. If the quote is too long for the limit, pick just one short, high-impact sentence from it. If there are no quotes, you are free to change all words (including news sources).
 - No clutter: No hashtags, no markdown, no asterisks, no bold text.
 - No double colons (Wrong: "Trump: says...", Correct: "Trump says...").
@@ -805,7 +654,7 @@ DEVELOPING|Clashes ongoing near Kharkiv as ceasefire talks remain stalled
 Tweet:
 {original_text}"""
 
-    result = ai_call(prompt, _page_context=browser_context)
+    result = ai_call(prompt)
 
     if result:
         if "|" in result:
@@ -1130,7 +979,7 @@ def perform_post_only(page, posted_cache):
         print(f"  🎥 Video: {has_video}, 🖼 Media: {len(media_paths) if isinstance(media_paths, list) else 0} files")
 
     print("  🤖 Generating caption...")
-    final_caption = build_final_caption(original_text, has_video=has_video, browser_context=page.context)
+    final_caption = build_final_caption(original_text, has_video=has_video)
     if len(final_caption) > 250:
         final_caption = final_caption[:247] + "..."
     print(f"  ✅ Caption: {final_caption}")
