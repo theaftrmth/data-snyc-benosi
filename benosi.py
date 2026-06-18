@@ -10,7 +10,7 @@ import math
 from datetime import datetime, timezone
 import pytz
 from playwright.sync_api import sync_playwright
-import g4f
+# g4f replaced by Perchance AI via browser automation
 
 # ──────────────────────────────────────────────
 # SOURCES (from env SOURCES)
@@ -512,17 +512,159 @@ def clean_text(text):
     return text.strip()
 
 
-def ai_call(prompt):
+PERCHANCE_URL = "https://perchance.org/ai-text-generator"
+
+# Perchance instruction (system prompt) — সেট করা হবে একবার, তারপর reuse
+PERCHANCE_SYSTEM_INSTRUCTION = (
+    "You are a sharp, fast-paced breaking news editor on X/Twitter. "
+    "Your job is to flash high-impact, urgent updates in a single, crisp sentence. "
+    "When given a tweet, rewrite it and choose the best label. "
+    "OUTPUT FORMAT (nothing else): LABEL|rewritten text"
+)
+
+# একটা পেজ reuse করার জন্য module-level reference
+_perchance_page = None
+_perchance_fl = None      # FrameLocator for iframe#outputIframeEl
+_perchance_context = None
+
+
+def _get_perchance_page(context):
+    """
+    Perchance এর জন্য আলাদা ট্যাব খোলে বা আগেরটা reuse করে।
+    Instruction field একবার সেট করে রাখে।
+    """
+    global _perchance_page, _perchance_fl, _perchance_context
+
+    if _perchance_context is not context:
+        _perchance_page = None
+        _perchance_fl = None
+        _perchance_context = context
+
+    if _perchance_page is not None:
+        try:
+            _ = _perchance_page.url
+            return _perchance_page
+        except Exception:
+            _perchance_page = None
+            _perchance_fl = None
+
+    print("  🌐 Perchance: নতুন ট্যাব খুলছি...")
+    page = context.new_page()
+
+    # Browser console এর error/warning গুলো bot log এ দেখাও
+    def _log_console(msg):
+        if msg.type in ("error", "warning"):
+            print(f"  🖥️ Console[{msg.type}]: {msg.text[:200]}")
+    page.on("console", _log_console)
+    page.on("pageerror", lambda err: print(f"  🖥️ PageError: {str(err)[:200]}"))
+
+    page.wait_for_timeout(random.randint(800, 1500))
+    page.goto(PERCHANCE_URL, wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(random.randint(2000, 3500))
+
+    # frame_locator — সরাসরি iframe#outputIframeEl টার্গেট করে
+    fl = page.frame_locator("iframe#outputIframeEl")
+
     try:
-        response = g4f.ChatCompletion.create(
-            model=g4f.models.default,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        if response:
-            return clean_text(str(response).strip())
-        return None
+        instr_loc = fl.locator("#instructionEl")
+        instr_loc.wait_for(state="visible", timeout=20000)
+        instr_loc.click()
+        page.wait_for_timeout(random.randint(300, 600))
+        page.keyboard.press("Control+A")
+        page.wait_for_timeout(200)
+        page.keyboard.press("Delete")
+        page.wait_for_timeout(random.randint(200, 400))
+        for char in PERCHANCE_SYSTEM_INSTRUCTION:
+            page.keyboard.type(char, delay=random.randint(18, 55))
+        page.wait_for_timeout(random.randint(400, 800))
+        print("  ✅ Perchance instruction সেট হয়েছে।")
     except Exception as e:
-        print(f"  ❌ AI error: {e}")
+        print(f"  ⚠️ Instruction field সেট করতে পারিনি: {e}")
+
+    _perchance_page = page
+    _perchance_fl = fl
+    return page
+
+
+def ai_call(prompt, _page_context=None):
+    """
+    Perchance AI তে prompt পাঠায় এবং output ফেরত দেয়।
+    _page_context: playwright BrowserContext (build_final_caption থেকে দেওয়া হয়)
+    """
+    global _perchance_fl
+
+    if _page_context is None:
+        print("  ❌ Perchance: browser context নেই, AI call বাদ।")
+        return None
+
+    try:
+        page = _get_perchance_page(_page_context)
+        fl = _perchance_fl or page.frame_locator("iframe#outputIframeEl")
+
+        # Perchance tab active করো — background throttling এড়াতে
+        page.bring_to_front()
+
+        # Instruction আপডেট করো full prompt দিয়ে
+        try:
+            instr_loc = fl.locator("#instructionEl")
+            instr_loc.wait_for(state="visible", timeout=10000)
+            instr_loc.click()
+            page.wait_for_timeout(random.randint(200, 400))
+            page.keyboard.press("Control+A")
+            page.wait_for_timeout(150)
+            page.keyboard.press("Delete")
+            page.wait_for_timeout(random.randint(150, 300))
+            for char in prompt:
+                page.keyboard.type(char, delay=random.randint(8, 30))
+            page.wait_for_timeout(random.randint(300, 600))
+        except Exception as e:
+            print(f"  ❌ Prompt type করতে পারিনি: {e}")
+            return None
+
+        # Regenerate বাটনে ক্লিক
+        try:
+            gen_loc = fl.locator("#generateBtn")
+            gen_loc.wait_for(state="visible", timeout=10000)
+            page.wait_for_timeout(random.randint(400, 800))
+            gen_loc.click()
+            print("  ⏳ Perchance generate করছে...")
+        except Exception as e:
+            print(f"  ❌ Generate বাটন ক্লিক করতে পারিনি: {e}")
+            return None
+
+        # Generation আসলে শুরু হয়েছে কিনা চেক করো (button text "generate" থেকে বদলায় কিনা)
+        page.wait_for_timeout(1000)
+        try:
+            btn_text = gen_loc.evaluate("el => el.textContent")
+            print(f"  🔍 Generate বাটনের state (click এর ১ সেকেন্ড পরে): '{btn_text.strip()}'")
+        except Exception as e:
+            print(f"  ⚠️ বাটন state চেক করতে পারিনি: {e}")
+
+        # Output আসার জন্য অপেক্ষা — frame_locator এর নিজের evaluate() ব্যবহার করো
+        # (cross-origin iframe হলেও এটা কাজ করে, কারণ এটা সরাসরি frame এর context এ চলে)
+        # ম্যানুয়ালি ৫-৬ সেকেন্ডে আসে, তাই ২০ সেকেন্ড যথেষ্ট safety margin
+        output = None
+        resp_loc = fl.locator("#responseEl")
+        for attempt in range(20):
+            page.wait_for_timeout(1000)
+            try:
+                val = resp_loc.evaluate("el => el.value")
+                if val and val.strip() and len(val.strip()) > 5:
+                    output = val.strip()
+                    break
+            except Exception as e:
+                if attempt == 0:
+                    print(f"  ⚠️ evaluate error (চলবে): {e}")
+
+        if not output:
+            print("  ❌ Perchance থেকে output পাইনি।")
+            return None
+
+        print(f"  ✅ Perchance output: {output[:80]}...")
+        return clean_text(output)
+
+    except Exception as e:
+        print(f"  ❌ Perchance AI error: {e}")
         return None
 
 
@@ -531,42 +673,17 @@ def ai_call(prompt):
 # ──────────────────────────────────────────────
 
 def ai_select_best_tweet(tweet_list):
+    """
+    Score-based tweet selection (AI call বাদ — Perchance শুধু caption এ ব্যবহার হবে)।
+    সর্বোচ্চ score এর tweet return করে।
+    """
     try:
-        shortlist = []
-        for t in tweet_list:
-            shortlist.append({
-                "source": t["source"],
-                "text": t["text"][:150],
-                "likes": t.get("likes", 0),
-                "age_min": t.get("age_min", 0)
-            })
-        prompt = f"""You are a sharp geopolitical news editor for X/Twitter.
-Below are tweets from breaking news sources. Pick the ONE tweet that is the most newsworthy, urgent, and likely to get high engagement.
-
-STRICT DISQUALIFIERS — skip any tweet that contains:
-- Opinion, editorial commentary, or advocacy (even partially)
-- Loaded/charged labels applied by the source itself: "terrorist", "freedom fighter", "militant", "regime", "occupation", "genocide", "invasion", "liberation" etc. — unless these words appear inside a clearly attributed direct quote from an official body
-- Political takes, blame language, or calls to action
-- Reactions to news rather than the news itself (e.g. "This is outrageous", "We condemn...")
-
-Prefer strictly factual, event-based reporting: what happened, where, who was involved.
-Consider:
-- Global impact, surprise, conflict, diplomatic moves.
-- Uniqueness (not just a reaction).
-- Relevance right now.
-
-Tweets:
-{json.dumps(shortlist, indent=2, ensure_ascii=False)}
-
-Return ONLY the index (0-based) of the best tweet. Nothing else.
-Example: 2"""
-        result = ai_call(prompt)
-        if result and result.strip().isdigit():
-            idx = int(result.strip())
-            if 0 <= idx < len(tweet_list):
-                return tweet_list[idx]
+        if not tweet_list:
+            return None
+        best = max(tweet_list, key=lambda t: t.get("score", 0))
+        return best
     except Exception as e:
-        print(f"  ⚠️ AI post selection error: {e}")
+        print(f"  ⚠️ Tweet selection error: {e}")
     return None
 
 
@@ -618,7 +735,7 @@ def _trim_no_ellipsis(caption: str, max_chars=217) -> str:
     return portion
 
 
-def build_final_caption(original_text, has_video=False):
+def build_final_caption(original_text, has_video=False, browser_context=None):
     prompt = f"""You are a sharp, fast-paced breaking news editor on X/Twitter. Your job is to flash high-impact, urgent updates in a single, crisp sentence.
 
 Task: Rewrite the tweet below into a punchy, conversational, and urgent post, then choose the best label.
@@ -627,7 +744,7 @@ RULES FOR REWRITING:
 - Total character limit: MAXIMUM 220 characters for the ENTIRE text (including label). Short, fast, and to the point.
 - Complete thoughts only: It must be a self-contained, fully finished sentence. Do NOT use '...' or truncation markers.
 - Cut the fluff: If the text is long, strip out minor details and grab ONLY the single most explosive, important fact.
-- Human like Twitter style: Break completely free from the original sentence structure! Rearrange clauses, use active and powerful verbs, and make it sound alive. Avoid stiff, formal news jargon or robotic reporting. Write like a real person tweeting.
+- Real-human Twitter style: Break completely free from the original sentence structure! Rearrange clauses, use active and powerful verbs, and make it sound alive. Avoid stiff, formal news jargon or robotic reporting. Write like a real person tweeting.
 - Quotation Marks ("...") Rule: If the original tweet has text inside quotes, you MUST preserve a vital part of that quote word-for-word inside "..." marks. Do not paraphrase anything inside quotes. If the quote is too long for the limit, pick just one short, high-impact sentence from it. If there are no quotes, you are free to change all words (including news sources).
 - No clutter: No hashtags, no markdown, no asterisks, no bold text.
 - No double colons (Wrong: "Trump: says...", Correct: "Trump says...").
@@ -654,7 +771,7 @@ DEVELOPING|Clashes ongoing near Kharkiv as ceasefire talks remain stalled
 Tweet:
 {original_text}"""
 
-    result = ai_call(prompt)
+    result = ai_call(prompt, _page_context=browser_context)
 
     if result:
         if "|" in result:
@@ -979,7 +1096,7 @@ def perform_post_only(page, posted_cache):
         print(f"  🎥 Video: {has_video}, 🖼 Media: {len(media_paths) if isinstance(media_paths, list) else 0} files")
 
     print("  🤖 Generating caption...")
-    final_caption = build_final_caption(original_text, has_video=has_video)
+    final_caption = build_final_caption(original_text, has_video=has_video, browser_context=page.context)
     if len(final_caption) > 250:
         final_caption = final_caption[:247] + "..."
     print(f"  ✅ Caption: {final_caption}")
