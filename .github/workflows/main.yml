@@ -52,6 +52,7 @@ jobs:
       - name: Run bot
         env:
           SESSION_JSON: ${{ secrets.SESSION_JSON }}
+          DEEPSEEK_SESSION_JSON: ${{ secrets.DEEPSEEK_SESSION_JSON }}
           SOURCES: ${{ secrets.SOURCES }}
           HEADLESS: false
           PYTHONUNBUFFERED: 1
