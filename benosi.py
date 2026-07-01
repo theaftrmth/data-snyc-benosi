@@ -9,7 +9,7 @@ import json
 from datetime import datetime, timezone
 import pytz
 from playwright.sync_api import sync_playwright
-import g4f  # শুধু টুইট সিলেকশনের জন্য
+import g4f
 
 # ──────────────────────────────────────────────
 # SOURCES (from env SOURCES)
@@ -37,7 +37,7 @@ DAILY_LIMIT_FILE = "daily_post_limit.json"
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
 # ──────────────────────────────────────────────
-# DAILY POST LIMIT (14–16 posts per day)
+# DAILY POST LIMIT (28–32 posts per day)
 # ──────────────────────────────────────────────
 def get_daily_limit():
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -49,7 +49,7 @@ def get_daily_limit():
                 return data["target"], data["count"]
         except:
             pass
-    target = random.randint(14, 16)          # সারাদিনে সর্বোচ্চ ১৪–১৬ পোস্ট
+    target = random.randint(28, 32)          # দ্বিগুণ পোস্ট
     data = {"date": today_str, "target": target, "count": 0}
     with open(DAILY_LIMIT_FILE, "w") as f:
         json.dump(data, f)
@@ -477,7 +477,6 @@ def find_matching_tweet_index(page, target_text, search_range=10):
 # DEEPSEEK REWRITE (caption generation)
 # ──────────────────────────────────────────────
 def _deepseek_ensure_toggle_on(page, label_text: str) -> None:
-    """DeepThink/Search টগল ON না থাকলে ক্লিক করে ON করে দেয়।"""
     try:
         toggles = page.query_selector_all("div[aria-pressed]")
         for t in toggles:
@@ -493,10 +492,7 @@ def _deepseek_ensure_toggle_on(page, label_text: str) -> None:
     except Exception as e:
         print(f"  ⚠️  DeepSeek toggle '{label_text}' error: {e}")
 
-
 def _deepseek_is_focused(page, el) -> bool:
-    """textarea ক্লিক করার পর সেটা আসলেই focused হলো কিনা চেক করে —
-    focused অবস্থায় textarea-এর ঊর্ধ্বতন wrapper div-এ "focused" ক্লাস যোগ হয়।"""
     try:
         return bool(page.evaluate(
             """(node) => {
@@ -512,9 +508,7 @@ def _deepseek_is_focused(page, el) -> bool:
     except Exception:
         return False
 
-
 def deepseek_rewrite(context, prompt: str) -> str | None:
-    # DeepSeek-এর জন্য আলাদা context তৈরি (পুরো storage_state সহ)
     ds_session = load_deepseek_session()
     if not ds_session:
         print("  ❌ DeepSeek session not available — cannot rewrite.")
@@ -545,14 +539,11 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
             page.screenshot(path=f"deepseek_debug_{int(time.time())}.png")
             return None
 
-        # DeepThink ও Search টগল ON করা
         _deepseek_ensure_toggle_on(page, "DeepThink")
         _deepseek_ensure_toggle_on(page, "Search")
 
         textarea.click()
         page.wait_for_timeout(500)
-
-        # ক্লিকের পরও focused না হলে (wrapper div-এ "focused" ক্লাস না এলে) আরেকবার চেষ্টা
         if not _deepseek_is_focused(page, textarea):
             textarea.click()
             page.wait_for_timeout(500)
@@ -576,14 +567,12 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
             page.keyboard.press("Enter")
 
         print("  ⏳ Waiting for DeepSeek response (DeepThink + Search, ~90s)...")
-
-        # ফিক্সড ৯০ সেকেন্ড অপেক্ষা, তারপর টেক্সট স্থিতিশীল হওয়া পর্যন্ত পোলিং
         page.wait_for_timeout(90000)
 
         response_text = ""
         last_text = ""
         stable_count = 0
-        for _ in range(20):  # সর্বোচ্চ আরও ~40s অতিরিক্ত অপেক্ষা
+        for _ in range(20):
             page.wait_for_timeout(2000)
             try:
                 blocks = page.query_selector_all(
@@ -591,9 +580,6 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
                 )
                 if blocks:
                     last_block = blocks[-1]
-                    # সাইটেশন লিংক/নাম্বার আইকন (<a> ট্যাগ) রিমুভ না করে
-                    # স্পেস দিয়ে রিপ্লেস করা হচ্ছে, যাতে আশেপাশের শব্দ জোড়া লেগে না যায়
-                    # (স্পেস আগে থেকে থাকলে যে এক্সট্রা স্পেস তৈরি হবে, সেটা নিচে নরমালাইজ করা হচ্ছে)
                     page.evaluate(
                         """(el) => {
                             el.querySelectorAll('a').forEach(a => {
@@ -603,29 +589,23 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
                         last_block,
                     )
                     txt = last_block.inner_text().strip()
-                    txt = " ".join(txt.split())  # একাধিক স্পেস/নিউলাইন এক স্পেসে নামিয়ে আনা
+                    txt = " ".join(txt.split())
                     if txt:
                         if txt == last_text:
                             stable_count += 1
                         else:
                             stable_count = 0
                             last_text = txt
-                        if stable_count >= 2:  # পরপর দুইবার একই টেক্সট = জেনারেশন শেষ
+                        if stable_count >= 2:
                             response_text = txt
                             break
             except Exception:
                 pass
 
         if not response_text and last_text:
-            response_text = last_text  # timeout হলেও যা পাওয়া গেছে সেটাই নাও
+            response_text = last_text
 
-        # DeepSeek কিছু টপিকে (যেমন চীন-সম্পর্কিত) সরাসরি রিফিউজ করে দেয় —
-        # এই রিফিউজাল মেসেজ যাতে ভ্যালিড ক্যাপশন হিসেবে পোস্ট না হয়ে যায়,
-        # তাই এখানে ম্যাচ করলে response_text খালি করে দেওয়া হচ্ছে (ফলে None রিটার্ন
-        # হবে, আর কলার সাইডে যে fallback আগে থেকেই আছে সেটা ট্রিগার হবে)
-        REFUSAL_PHRASES = [
-            "beyond my current scope",
-        ]
+        REFUSAL_PHRASES = ["beyond my current scope"]
         if response_text and any(p in response_text.lower() for p in REFUSAL_PHRASES):
             print(f"  🚫 DeepSeek refused: {response_text[:80]}...")
             response_text = ""
@@ -991,7 +971,7 @@ def perform_post_only(page, posted_cache):
                 if not txt or is_duplicate(txt, posted_cache) or is_promotional(txt) or is_too_short(txt):
                     continue
                 age = get_tweet_age_minutes(tweet)
-                if age > 180:
+                if age > 360:
                     continue
                 like_btn = tweet.query_selector('button[data-testid="like"]')
                 likes = parse_count(like_btn.inner_text()) if like_btn else 0
@@ -1105,17 +1085,17 @@ def perform_post_only(page, posted_cache):
         return False
 
 # ──────────────────────────────────────────────
-# HUMAN DELAY FUNCTION (spreads 4 posts over 6 hours)
+# HUMAN DELAY FUNCTION (shorter intervals for more posts)
 # ──────────────────────────────────────────────
 def human_delay(iteration, hour):
     if 6 <= hour < 10:
-        base = random.randint(60, 100) * 60      # ১ – ১.৪ ঘণ্টা
+        base = random.randint(35, 50) * 60      # 35-50 min
     elif 10 <= hour < 16:
-        base = random.randint(70, 110) * 60      # ১.১০ – ১.৫০ ঘণ্টা
+        base = random.randint(40, 55) * 60      # 40-55 min
     elif 16 <= hour < 22:
-        base = random.randint(60, 100) * 60      # ১ – ১.৪ ঘণ্টা
+        base = random.randint(35, 50) * 60      # 35-50 min
     else:
-        base = random.randint(80, 130) * 60      # ১.২০ – ২.১০ ঘণ্টা
+        base = random.randint(50, 70) * 60      # 50-70 min
     return base
 
 # ──────────────────────────────────────────────
@@ -1161,8 +1141,6 @@ def run_bot_loop():
         )
         page = context.new_page()
 
-        # apply_deepseek_cookies(context)  # এখন আর দরকার নেই, আলাদা context হবে
-
         page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
@@ -1199,7 +1177,7 @@ def run_bot_loop():
 
         print(f"\n🤖 News Bot started (Post-Only Mode) — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         iteration = 0
-        SIESTA_EVERY = random.randint(15, 20)   # এখন এত ইটারেশন হবে না, তাই সিয়েস্তা খুব একটা আসবে না
+        SIESTA_EVERY = 1000   # সিয়েস্তা কার্যত বন্ধ (অনেক উঁচু মান)
 
         while True:
             target, current = get_daily_limit()
@@ -1217,7 +1195,7 @@ def run_bot_loop():
                 break
 
             if iteration > 0 and iteration % SIESTA_EVERY == 0:
-                siesta = random.randint(30, 60) * 60   # লম্বা বিশ্রাম (তবে কম ইটারেশনে নাও আসতে পারে)
+                siesta = random.randint(45, 90) * 60
                 print(f"\n☕ Siesta for {siesta//60} minutes...", flush=True)
                 time.sleep(siesta)
                 continue
