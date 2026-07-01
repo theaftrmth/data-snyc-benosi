@@ -84,3 +84,11 @@ jobs:
         with:
           name: attach-fail-screenshots
           path: attach_fail_*.png
+
+      - name: Upload DeepSeek debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: deepseek-debug-screenshots
+          path: deepseek_debug_*.png
