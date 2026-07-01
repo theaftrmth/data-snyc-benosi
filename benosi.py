@@ -89,6 +89,38 @@ def load_session():
             print(f"❌ session.json error: {e}")
     return None
 
+def load_deepseek_session():
+    session_json_str = os.environ.get("DEEPSEEK_SESSION_JSON")
+    if session_json_str:
+        try:
+            data = json.loads(session_json_str)
+            if "cookies" in data:
+                print(f"✅ DEEPSEEK_SESSION_JSON loaded. cookies: {len(data['cookies'])}")
+                return data
+        except Exception as e:
+            print(f"❌ DEEPSEEK_SESSION_JSON parse error: {e}")
+    if os.path.exists("deepseek_session.json"):
+        try:
+            with open("deepseek_session.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if "cookies" in data:
+                print(f"✅ deepseek_session.json loaded. cookies: {len(data['cookies'])}")
+                return data
+        except Exception as e:
+            print(f"❌ deepseek_session.json error: {e}")
+    print("⚠️  No DeepSeek session found (DEEPSEEK_SESSION_JSON not set). DeepSeek rewrite may fail as logged-out.")
+    return None
+
+def apply_deepseek_cookies(context):
+    """একই browser context-এ DeepSeek-এর কুকি ইনজেক্ট করে (X সেশনের পাশাপাশি)।"""
+    ds_session = load_deepseek_session()
+    if ds_session and "cookies" in ds_session:
+        try:
+            context.add_cookies(ds_session["cookies"])
+            print(f"✅ DeepSeek cookies injected into context: {len(ds_session['cookies'])}")
+        except Exception as e:
+            print(f"❌ Failed to inject DeepSeek cookies: {e}")
+
 def validate_session():
     session = load_session()
     if session is None:
@@ -442,17 +474,48 @@ def find_matching_tweet_index(page, target_text, search_range=10):
     return None
 
 # ──────────────────────────────────────────────
-# GROK REWRITE (caption generation)
+# DEEPSEEK REWRITE (caption generation)
 # ──────────────────────────────────────────────
-def grok_rewrite(context, prompt: str) -> str | None:
+def _deepseek_ensure_toggle_on(page, label_text: str) -> None:
+    """DeepThink/Search টগল ON না থাকলে ক্লিক করে ON করে দেয়।"""
+    try:
+        toggles = page.query_selector_all("div[aria-pressed]")
+        for t in toggles:
+            span = t.query_selector("span")
+            if span and span.inner_text().strip() == label_text:
+                pressed = t.get_attribute("aria-pressed")
+                cls = t.get_attribute("class") or ""
+                is_on = (pressed == "true") and ("ds-toggle-button--selected" in cls)
+                if not is_on:
+                    t.click()
+                    page.wait_for_timeout(random.uniform(400, 700))
+                return
+    except Exception as e:
+        print(f"  ⚠️  DeepSeek toggle '{label_text}' error: {e}")
+
+
+def _deepseek_new_chat(page) -> None:
+    """প্রতিটা rewrite-এর আগে fresh 'New chat' শুরু করে।"""
+    try:
+        btn = page.locator('div[tabindex="0"]:has(span:text-is("New chat"))').first
+        btn.wait_for(state="visible", timeout=5000)
+        btn.click()
+        page.wait_for_timeout(random.uniform(600, 1000))
+    except Exception as e:
+        print(f"  ⚠️  DeepSeek 'New chat' click skipped: {e}")
+
+
+def deepseek_rewrite(context, prompt: str) -> str | None:
     page = context.new_page()
     try:
-        print("  🌐 Grok page loading...")
-        page.goto("https://x.com/i/grok", wait_until="domcontentloaded", timeout=30000)
+        print("  🌐 DeepSeek page loading...")
+        page.goto("https://chat.deepseek.com/", wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(3000)
 
+        _deepseek_new_chat(page)
+
         textarea = None
-        for sel in ['textarea[placeholder="Ask anything"]', 'textarea']:
+        for sel in ['textarea[placeholder="Message DeepSeek"]', 'textarea']:
             try:
                 el = page.wait_for_selector(sel, timeout=8000)
                 if el and el.is_visible():
@@ -461,8 +524,12 @@ def grok_rewrite(context, prompt: str) -> str | None:
             except:
                 continue
         if not textarea:
-            print("  ❌ Grok textarea not found.")
+            print("  ❌ DeepSeek textarea not found.")
             return None
+
+        # DeepThink ও Search টগল ON করা
+        _deepseek_ensure_toggle_on(page, "DeepThink")
+        _deepseek_ensure_toggle_on(page, "Search")
 
         textarea.click()
         page.wait_for_timeout(500)
@@ -470,52 +537,80 @@ def grok_rewrite(context, prompt: str) -> str | None:
         page.wait_for_timeout(random.uniform(500, 800))
 
         sent = False
-        for btn_sel in [
-            'button[aria-label="Send"]',
-            'button[data-testid="grok-send-button"]',
-            'button[type="submit"]',
-        ]:
-            try:
-                btn = page.wait_for_selector(btn_sel, timeout=5000)
-                if btn and btn.is_visible() and btn.is_enabled():
-                    btn.click()
-                    sent = True
-                    break
-            except:
-                continue
+        try:
+            btn = page.wait_for_selector(
+                'div[role="button"].ds-button--primary.ds-button--circle', timeout=5000
+            )
+            if btn and btn.is_visible() and btn.is_enabled():
+                btn.click()
+                sent = True
+        except:
+            pass
         if not sent:
             page.keyboard.press("Enter")
 
-        print("  ⏳ Waiting for Grok response...")
-        page.wait_for_timeout(15000)
+        print("  ⏳ Waiting for DeepSeek response (DeepThink + Search, ~90s)...")
+
+        # ফিক্সড ৯০ সেকেন্ড অপেক্ষা, তারপর টেক্সট স্থিতিশীল হওয়া পর্যন্ত পোলিং
+        page.wait_for_timeout(90000)
 
         response_text = ""
-        for _ in range(20):
-            page.wait_for_timeout(1500)
+        last_text = ""
+        stable_count = 0
+        for _ in range(20):  # সর্বোচ্চ আরও ~40s অতিরিক্ত অপেক্ষা
+            page.wait_for_timeout(2000)
             try:
-                els = page.query_selector_all("div.r-1wbh5a2.r-11niif6.r-bnwqim.r-13qz1uu")
-                for el in reversed(els):
-                    txt = el.inner_text().strip()
-                    if txt and len(txt) > 5 and prompt[:20] not in txt:
-                        if any(t in txt.lower() for t in [
-                            "thinking about", "let me think", "i'm thinking",
-                            "processing your", "considering your", "analyzing"
-                        ]):
-                            continue
-                        response_text = txt
-                        break
-            except:
+                blocks = page.query_selector_all(
+                    "div.ds-markdown.ds-assistant-message-main-content"
+                )
+                if blocks:
+                    last_block = blocks[-1]
+                    # সাইটেশন লিংক/নাম্বার আইকন (<a> ট্যাগ) রিমুভ না করে
+                    # স্পেস দিয়ে রিপ্লেস করা হচ্ছে, যাতে আশেপাশের শব্দ জোড়া লেগে না যায়
+                    # (স্পেস আগে থেকে থাকলে যে এক্সট্রা স্পেস তৈরি হবে, সেটা নিচে নরমালাইজ করা হচ্ছে)
+                    page.evaluate(
+                        """(el) => {
+                            el.querySelectorAll('a').forEach(a => {
+                                a.replaceWith(document.createTextNode(' '));
+                            });
+                        }""",
+                        last_block,
+                    )
+                    txt = last_block.inner_text().strip()
+                    txt = " ".join(txt.split())  # একাধিক স্পেস/নিউলাইন এক স্পেসে নামিয়ে আনা
+                    if txt:
+                        if txt == last_text:
+                            stable_count += 1
+                        else:
+                            stable_count = 0
+                            last_text = txt
+                        if stable_count >= 2:  # পরপর দুইবার একই টেক্সট = জেনারেশন শেষ
+                            response_text = txt
+                            break
+            except Exception:
                 pass
-            if response_text:
-                break
+
+        if not response_text and last_text:
+            response_text = last_text  # timeout হলেও যা পাওয়া গেছে সেটাই নাও
+
+        # DeepSeek কিছু টপিকে (যেমন চীন-সম্পর্কিত) সরাসরি রিফিউজ করে দেয় —
+        # এই রিফিউজাল মেসেজ যাতে ভ্যালিড ক্যাপশন হিসেবে পোস্ট না হয়ে যায়,
+        # তাই এখানে ম্যাচ করলে response_text খালি করে দেওয়া হচ্ছে (ফলে None রিটার্ন
+        # হবে, আর কলার সাইডে যে fallback আগে থেকেই আছে সেটা ট্রিগার হবে)
+        REFUSAL_PHRASES = [
+            "beyond my current scope",
+        ]
+        if response_text and any(p in response_text.lower() for p in REFUSAL_PHRASES):
+            print(f"  🚫 DeepSeek refused: {response_text[:80]}...")
+            response_text = ""
 
         if response_text:
-            print(f"  ✅ Grok response: {response_text[:100]}...")
+            print(f"  ✅ DeepSeek response: {response_text[:100]}...")
             return response_text
         else:
-            print("  ⚠️  Grok no response.")
+            print("  ⚠️  DeepSeek no response.")
     except Exception as e:
-        print(f"  ⚠️  Grok error: {e}")
+        print(f"  ⚠️  DeepSeek error: {e}")
     finally:
         page.close()
     return None
@@ -564,6 +659,8 @@ Consider:
 - Uniqueness (not just a reaction).
 - Relevance right now.
 
+STRICT EXCLUSION: Do NOT select any sports-related tweet (football/soccer World Cup, matches, scores, goals, transfers, players, tournaments, etc.).
+
 Tweets:
 {json.dumps(shortlist, indent=2, ensure_ascii=False)}
 
@@ -579,7 +676,7 @@ Example: 2"""
     return None
 
 # ──────────────────────────────────────────────
-# CAPTION GENERATION (Grok, fallback = original text)
+# CAPTION GENERATION (DeepSeek, fallback = original text)
 # ──────────────────────────────────────────────
 LABEL_KEYWORDS = {
     "DEVELOPING": ["developing", "ongoing", "unfolding", "continues", "still"],
@@ -621,43 +718,42 @@ def _trim_no_ellipsis(caption: str, max_chars=217) -> str:
     return portion
 
 def build_final_caption(original_text, has_video=False, context=None):
-    prompt = f"""You are a sharp, fast-paced breaking news editor on X/Twitter. Your job is to flash high-impact, urgent updates in a single, crisp sentence.
-
-Task: Rewrite the tweet below into a punchy, conversational, and urgent post, then choose the best label.
-
-RULES FOR REWRITING:
-- Total character limit: MAXIMUM 220 characters for the ENTIRE text (including label). Short, fast, and to the point.
-- Complete thoughts only: It must be a self-contained, fully finished sentence. Do NOT use '...' or truncation markers.
-- Cut the fluff: If the text is long, strip out minor details and grab ONLY the single most explosive, important fact.
-- Human like Twitter style: Break completely free from the original sentence structure! Rearrange clauses, use active and powerful verbs, and make it sound alive. Avoid stiff, formal news jargon or robotic reporting. Write like a real person tweeting.
-- Quotation Marks ("...") Rule: If the original tweet has text inside quotes, you MUST preserve a vital part of that quote word-for-word inside "..." marks. Do not paraphrase anything inside quotes. If the quote is too long for the limit, pick just one short, high-impact sentence from it. If there are no quotes, you are free to change all words (including news sources).
-- No clutter: No hashtags, no markdown, no asterisks, no bold text.
-- No double colons (Wrong: "Trump: says...", Correct: "Trump says...").
-- Starting constraint: Never start the text with labels like BREAKING, DEVELOPING, WATCH, or INTERESTING.
-- Full official titles: Use full formal titles for official positions (e.g., use "United States Central Command" instead of just "CENTCOM").
-- Keep it objective: Stick strictly to the factual core event. No personal drama, no blame-game, and no opinion from the source account.
+    prompt = f"""Search web, rewrite this into ONE sentence under 220 total characters with key facts only. No extra words. then choose the best label.
 
 RULES FOR LABEL:
+
 - BREAKING → urgent news, military developments, major political events (DEFAULT)
+
 - DEVELOPING → active, fast-changing situations
+
 - INTERESTING → surprising facts, but not immediately urgent
+
 - WATCH → ONLY if the tweet has video footage
+
 
 {"VIDEO ATTACHED — WATCH label is allowed if it fits." if has_video else "NO VIDEO ATTACHED — do NOT use WATCH. Use BREAKING instead."}
 
+
 OUTPUT FORMAT (Strictly match this layout, nothing else):
+
 LABEL|rewritten text
 
+
 Examples:
+
 BREAKING|Trump warns Iran of consequences unlike anything seen before if nuclear talks fail
+
 INTERESTING|North Korea quietly tested a new ICBM variant — US intel confirms
+
 DEVELOPING|Clashes ongoing near Kharkiv as ceasefire talks remain stalled
 
+
 Tweet:
+
 {original_text}"""
 
     if context:
-        result = grok_rewrite(context, prompt)
+        result = deepseek_rewrite(context, prompt)
     else:
         result = None
 
@@ -688,7 +784,7 @@ Tweet:
         return f"{_label_emoji(label)} {label} | {caption}"
 
     # ── ফলব্যাক: সরাসরি অরিজিনাল টেক্সট, কোনো লেবেল/রিরাইটিং ছাড়া ──
-    print("  ⚠️ Grok failed, posting original tweet text as fallback...")
+    print("  ⚠️ DeepSeek failed, posting original tweet text as fallback...")
     fallback = clean_text(original_text)
     if len(fallback) > 280:
         fallback = fallback[:277] + "..."
@@ -1038,6 +1134,8 @@ def run_bot_loop():
             viewport={'width': 1920, 'height': 1080}
         )
         page = context.new_page()
+
+        apply_deepseek_cookies(context)
 
         page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
