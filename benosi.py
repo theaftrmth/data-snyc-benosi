@@ -536,6 +536,7 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
                 continue
         if not textarea:
             print("  ❌ DeepSeek textarea not found.")
+            page.screenshot(path=f"deepseek_debug_{int(time.time())}.png")
             return None
 
         # DeepThink ও Search টগল ON করা
