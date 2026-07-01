@@ -494,15 +494,23 @@ def _deepseek_ensure_toggle_on(page, label_text: str) -> None:
         print(f"  ⚠️  DeepSeek toggle '{label_text}' error: {e}")
 
 
-def _deepseek_new_chat(page) -> None:
-    """প্রতিটা rewrite-এর আগে fresh 'New chat' শুরু করে।"""
+def _deepseek_is_focused(page, el) -> bool:
+    """textarea ক্লিক করার পর সেটা আসলেই focused হলো কিনা চেক করে —
+    focused অবস্থায় textarea-এর ঊর্ধ্বতন wrapper div-এ "focused" ক্লাস যোগ হয়।"""
     try:
-        btn = page.locator('div[tabindex="0"]:has(span:text-is("New chat"))').first
-        btn.wait_for(state="visible", timeout=5000)
-        btn.click()
-        page.wait_for_timeout(random.uniform(600, 1000))
-    except Exception as e:
-        print(f"  ⚠️  DeepSeek 'New chat' click skipped: {e}")
+        return bool(page.evaluate(
+            """(node) => {
+                let p = node;
+                for (let i = 0; i < 6 && p; i++) {
+                    if (p.classList && p.classList.contains('focused')) return true;
+                    p = p.parentElement;
+                }
+                return false;
+            }""",
+            el,
+        ))
+    except Exception:
+        return False
 
 
 def deepseek_rewrite(context, prompt: str) -> str | None:
@@ -512,10 +520,13 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
         page.goto("https://chat.deepseek.com/", wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(3000)
 
-        _deepseek_new_chat(page)
-
         textarea = None
-        for sel in ['textarea[placeholder="Message DeepSeek"]', 'textarea']:
+        for sel in [
+            'textarea[name="search"]',
+            'textarea[placeholder="Message DeepSeek"]',
+            'textarea.ds-scroll-area',
+            'textarea',
+        ]:
             try:
                 el = page.wait_for_selector(sel, timeout=8000)
                 if el and el.is_visible():
@@ -533,6 +544,14 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
 
         textarea.click()
         page.wait_for_timeout(500)
+
+        # ক্লিকের পরও focused না হলে (wrapper div-এ "focused" ক্লাস না এলে) আরেকবার চেষ্টা
+        if not _deepseek_is_focused(page, textarea):
+            textarea.click()
+            page.wait_for_timeout(500)
+            if not _deepseek_is_focused(page, textarea):
+                print("  ⚠️  DeepSeek: ক্লিকের পরও ইনপুট বক্স focused হয়নি, তবু টাইপ করার চেষ্টা চলছে...")
+
         textarea.fill(prompt)
         page.wait_for_timeout(random.uniform(500, 800))
 
@@ -659,8 +678,6 @@ Consider:
 - Uniqueness (not just a reaction).
 - Relevance right now.
 
-STRICT EXCLUSION: Do NOT select any sports-related tweet (football/soccer World Cup, matches, scores, goals, transfers, players, tournaments, etc.).
-
 Tweets:
 {json.dumps(shortlist, indent=2, ensure_ascii=False)}
 
@@ -718,38 +735,39 @@ def _trim_no_ellipsis(caption: str, max_chars=217) -> str:
     return portion
 
 def build_final_caption(original_text, has_video=False, context=None):
-    prompt = f"""Search web, rewrite this into ONE sentence under 220 total characters with key facts only. No extra words. then choose the best label.
+    prompt = f"""You are a sharp, fast-paced breaking news editor on X/Twitter. Your job is to flash high-impact, urgent updates in a single, crisp sentence.
+
+Task: Rewrite the tweet below into a punchy, conversational, and urgent post, then choose the best label.
+
+RULES FOR REWRITING:
+- Total character limit: MAXIMUM 220 characters for the ENTIRE text (including label). Short, fast, and to the point.
+- Complete thoughts only: It must be a self-contained, fully finished sentence. Do NOT use '...' or truncation markers.
+- Cut the fluff: If the text is long, strip out minor details and grab ONLY the single most explosive, important fact.
+- Human like Twitter style: Break completely free from the original sentence structure! Rearrange clauses, use active and powerful verbs, and make it sound alive. Avoid stiff, formal news jargon or robotic reporting. Write like a real person tweeting.
+- Quotation Marks ("...") Rule: If the original tweet has text inside quotes, you MUST preserve a vital part of that quote word-for-word inside "..." marks. Do not paraphrase anything inside quotes. If the quote is too long for the limit, pick just one short, high-impact sentence from it. If there are no quotes, you are free to change all words (including news sources).
+- No clutter: No hashtags, no markdown, no asterisks, no bold text.
+- No double colons (Wrong: "Trump: says...", Correct: "Trump says...").
+- Starting constraint: Never start the text with labels like BREAKING, DEVELOPING, WATCH, or INTERESTING.
+- Full official titles: Use full formal titles for official positions (e.g., use "United States Central Command" instead of just "CENTCOM").
+- Keep it objective: Stick strictly to the factual core event. No personal drama, no blame-game, and no opinion from the source account.
 
 RULES FOR LABEL:
-
 - BREAKING → urgent news, military developments, major political events (DEFAULT)
-
 - DEVELOPING → active, fast-changing situations
-
 - INTERESTING → surprising facts, but not immediately urgent
-
 - WATCH → ONLY if the tweet has video footage
-
 
 {"VIDEO ATTACHED — WATCH label is allowed if it fits." if has_video else "NO VIDEO ATTACHED — do NOT use WATCH. Use BREAKING instead."}
 
-
 OUTPUT FORMAT (Strictly match this layout, nothing else):
-
 LABEL|rewritten text
 
-
 Examples:
-
 BREAKING|Trump warns Iran of consequences unlike anything seen before if nuclear talks fail
-
 INTERESTING|North Korea quietly tested a new ICBM variant — US intel confirms
-
 DEVELOPING|Clashes ongoing near Kharkiv as ceasefire talks remain stalled
 
-
 Tweet:
-
 {original_text}"""
 
     if context:
