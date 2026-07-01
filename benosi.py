@@ -514,7 +514,13 @@ def _deepseek_is_focused(page, el) -> bool:
 
 
 def deepseek_rewrite(context, prompt: str) -> str | None:
-    page = context.new_page()
+    # DeepSeek-এর জন্য আলাদা context তৈরি (পুরো storage_state সহ)
+    ds_session = load_deepseek_session()
+    if not ds_session:
+        print("  ❌ DeepSeek session not available — cannot rewrite.")
+        return None
+    ds_context = context.browser.new_context(storage_state=ds_session)
+    page = ds_context.new_page()
     try:
         print("  🌐 DeepSeek page loading...")
         page.goto("https://chat.deepseek.com/", wait_until="domcontentloaded", timeout=30000)
@@ -633,6 +639,7 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
         print(f"  ⚠️  DeepSeek error: {e}")
     finally:
         page.close()
+        ds_context.close()
     return None
 
 # ──────────────────────────────────────────────
@@ -1154,7 +1161,7 @@ def run_bot_loop():
         )
         page = context.new_page()
 
-        apply_deepseek_cookies(context)
+        # apply_deepseek_cookies(context)  # এখন আর দরকার নেই, আলাদা context হবে
 
         page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
