@@ -11,6 +11,8 @@ import pytz
 from playwright.sync_api import sync_playwright
 import g4f
 
+BD_TZ = pytz.timezone("Asia/Dhaka")  # human_delay-এর hour bucket যাতে লোকাল টাইম অনুযায়ী কাজ করে
+
 # ──────────────────────────────────────────────
 # SOURCES (from env SOURCES)
 # ──────────────────────────────────────────────
@@ -232,6 +234,24 @@ def is_promotional(text):
 def is_too_short(text, min_chars=40):
     return len(text.strip()) < min_chars
 
+# স্পোর্টস-সম্পর্কিত টুইট বাদ দেওয়ার জন্য হার্ড ফিল্টার (AI প্রম্পটের উপর নির্ভর না করে)
+SPORTS_KEYWORDS = [
+    "world cup", "football match", "soccer", "premier league", "la liga",
+    "serie a", "bundesliga", "champions league", "europa league",
+    "fifa", "uefa", "ballon d'or", "transfer window", "hat-trick", "hattrick",
+    "red card", "yellow card", "offside", "penalty shootout", "penalty kick",
+    "extra time", "round of 16", "round of sixteen", "round of 32",
+    "quarterfinal", "quarter-final", "semifinal", "semi-final",
+    "relegation", "kickoff", "kick-off", "halftime", "half-time",
+    "full-time whistle", "fulltime", "nba", "nfl", "mlb", "nhl",
+    "wimbledon", "grand prix", "formula 1", "f1 race", "ufc", "boxing match",
+    "olympics", "playoffs", "grand slam", "test match", "t20", "ipl",
+    "manager sacked", "transfer fee", "world cup qualifier",
+]
+
+def is_sports_related(text):
+    return any(kw in text.lower() for kw in SPORTS_KEYWORDS)
+
 def is_pinned_tweet(tweet_element):
     try:
         social_context = tweet_element.query_selector('[data-testid="socialContext"]')
@@ -387,41 +407,49 @@ def download_media(url, filename):
         print(f"  ❌ Image download failed: {e}")
     return None
 
-def download_video_with_ytdlp(tweet_url):
+def download_video_with_ytdlp(tweet_url, max_attempts=3):
     if not tweet_url:
         return None
-    try:
-        out_path = os.path.join(MEDIA_DIR, f"video_{int(time.time())}.mp4")
-        cmd = [
-            "yt-dlp", "--no-playlist",
-            "--format", "mp4/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "--merge-output-format", "mp4",
-            "--output", out_path,
-            "--quiet", "--no-warnings",
-            "--socket-timeout", "30",
-            tweet_url,
-        ]
-        result = subprocess.run(cmd, timeout=60, capture_output=True, text=True)
-        if result.returncode == 0 and os.path.exists(out_path):
-            size = os.path.getsize(out_path)
-            print(f"  📥 Video downloaded: {size // 1024}KB")
-            if size == 0:
-                print("  ⚠️ Downloaded file is 0 bytes, skipping.")
-                os.remove(out_path)
-                return None
-            if size > 100 * 1024 * 1024:
-                print("  ⚠️ Video too large (100MB+), skip.")
-                os.remove(out_path)
-                return "TOO_LARGE"
-            return out_path
-        else:
-            print(f"  ❌ yt-dlp failed: {result.stderr[:200]}")
-    except subprocess.TimeoutExpired:
-        print("  ❌ yt-dlp timeout.")
-    except FileNotFoundError:
-        print("  ❌ yt-dlp not installed.")
-    except Exception as e:
-        print(f"  ❌ Video download error: {e}")
+    for attempt in range(1, max_attempts + 1):
+        try:
+            out_path = os.path.join(MEDIA_DIR, f"video_{int(time.time())}_{attempt}.mp4")
+            cmd = [
+                "yt-dlp", "--no-playlist",
+                "--format", "mp4/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "--merge-output-format", "mp4",
+                "--output", out_path,
+                "--quiet", "--no-warnings",
+                "--socket-timeout", "30",
+                tweet_url,
+            ]
+            result = subprocess.run(cmd, timeout=60, capture_output=True, text=True)
+            if result.returncode == 0 and os.path.exists(out_path):
+                size = os.path.getsize(out_path)
+                print(f"  📥 Video downloaded: {size // 1024}KB")
+                if size == 0:
+                    print("  ⚠️ Downloaded file is 0 bytes, skipping.")
+                    os.remove(out_path)
+                    return None
+                if size > 100 * 1024 * 1024:
+                    print("  ⚠️ Video too large (100MB+), skip.")
+                    os.remove(out_path)
+                    return "TOO_LARGE"
+                return out_path
+            else:
+                print(f"  ❌ yt-dlp failed (attempt {attempt}/{max_attempts}): {result.stderr[:200]}")
+                if attempt < max_attempts:
+                    time.sleep(random.uniform(4, 8))
+        except subprocess.TimeoutExpired:
+            print(f"  ❌ yt-dlp timeout (attempt {attempt}/{max_attempts}).")
+            if attempt < max_attempts:
+                time.sleep(random.uniform(4, 8))
+        except FileNotFoundError:
+            print("  ❌ yt-dlp not installed.")
+            return None
+        except Exception as e:
+            print(f"  ❌ Video download error (attempt {attempt}/{max_attempts}): {e}")
+            if attempt < max_attempts:
+                time.sleep(random.uniform(4, 8))
     return None
 
 def extract_media_urls_safely(page, tweet_index):
@@ -646,7 +674,7 @@ def ai_call(prompt):
         return None
 
 # ──────────────────────────────────────────────
-# AI SELECTION (g4f, no disqualifiers)
+# AI SELECTION (g4f, no disqualifiers, source + text only)
 # ──────────────────────────────────────────────
 def ai_select_best_tweet(tweet_list):
     try:
@@ -654,9 +682,7 @@ def ai_select_best_tweet(tweet_list):
         for t in tweet_list:
             shortlist.append({
                 "source": t["source"],
-                "text": t["text"][:150],
-                "likes": t.get("likes", 0),
-                "age_min": t.get("age_min", 0)
+                "text": t["text"][:150]
             })
         prompt = f"""You are a sharp geopolitical news editor for X/Twitter.
 Below are tweets from breaking news sources. Pick the ONE tweet that is the most newsworthy, urgent, and likely to get high engagement.
@@ -725,7 +751,7 @@ def _trim_no_ellipsis(caption: str, max_chars=217) -> str:
     return portion
 
 def build_final_caption(original_text, has_video=False, context=None):
-    prompt = f"""Search web, rewrite this into ONE sentence under 220 total characters with key facts only. No extra words. then choose the best label.
+    prompt = f"""Search web, rewrite this into TWO sentence under 220 total characters with key facts. No extra words. then choose the best label.
 RULES FOR LABEL:
 
 - BREAKING → urgent news, military developments, major political events (DEFAULT)
@@ -789,7 +815,7 @@ Tweet:
         caption = _trim_no_ellipsis(caption, max_chars=217)
         return f"{_label_emoji(label)} {label} | {caption}"
 
-    # ── ফলব্যাক: সরাসরি অরিজিনাল টেক্সট, কোনো লেবেল/রিরাইটিং ছাড়া ──
+    # ── ফলব্যাক: সরাসরি অরিজিনাল টেক্সট, কোনো লেবেল/রিরাইটিং ছাড়া ──
     print("  ⚠️ DeepSeek failed, posting original tweet text as fallback...")
     fallback = clean_text(original_text)
     if len(fallback) > 280:
@@ -941,6 +967,58 @@ def simulate_scroll(page):
         print(f"  ⚠️ Scroll error: {e}")
 
 # ──────────────────────────────────────────────
+# STOCHASTIC FAIR TOP-N SELECTION (small accounts যেন চাপা না পড়ে)
+# ──────────────────────────────────────────────
+def _weighted_pick_one(cands):
+    """একটা সোর্সের candidate লিস্ট থেকে score-weighted random pick।"""
+    if not cands:
+        return None
+    if len(cands) == 1:
+        return cands[0]
+    weights = [max(c['score'], 1.0) for c in cands]
+    return random.choices(cands, weights=weights, k=1)[0]
+
+def _weighted_sample_without_replacement(cands, k):
+    """score-weighted, কিন্তু একই আইটেম দুইবার না নিয়ে k সংখ্যক তুলে আনে।"""
+    pool = list(cands)
+    chosen = []
+    for _ in range(min(k, len(pool))):
+        weights = [max(c['score'], 1.0) for c in pool]
+        pick = random.choices(pool, weights=weights, k=1)[0]
+        chosen.append(pick)
+        pool.remove(pick)
+    return chosen
+
+def select_shortlist_for_ai(candidates, top_n=10):
+    """
+    ধাপ ১: প্রতিটা সোর্স থেকে অন্তত একটা টুইট (score-weighted) — ছোট একাউন্টও সুযোগ পায়।
+    ধাপ ২: top_n পূর্ণ না হলে বাকি পুল থেকে score-weighted ভাবে ভরাট করা হয়।
+    ধাপ ৩: সোর্স সংখ্যা top_n-এর বেশি হলে, per-source picks থেকেই weighted-random-এ top_n-এ নামানো হয়।
+    """
+    by_source = {}
+    for c in candidates:
+        by_source.setdefault(c['source'], []).append(c)
+
+    per_source_picks = []
+    for source, cands in by_source.items():
+        pick = _weighted_pick_one(cands)
+        if pick:
+            per_source_picks.append(pick)
+
+    if len(per_source_picks) <= top_n:
+        shortlist = list(per_source_picks)
+        if len(shortlist) < top_n:
+            chosen_ids = {id(c) for c in shortlist}
+            remaining = [c for c in candidates if id(c) not in chosen_ids]
+            need = top_n - len(shortlist)
+            shortlist.extend(_weighted_sample_without_replacement(remaining, need))
+    else:
+        shortlist = _weighted_sample_without_replacement(per_source_picks, top_n)
+
+    random.shuffle(shortlist)  # likes-descending ক্রম AI-কে না দেখানোর জন্য
+    return shortlist
+
+# ──────────────────────────────────────────────
 # POST-ONLY FUNCTION
 # ──────────────────────────────────────────────
 def perform_post_only(page, posted_cache):
@@ -968,10 +1046,10 @@ def perform_post_only(page, posted_cache):
                     continue
                 text_el = tweet.query_selector('div[data-testid="tweetText"]')
                 txt = text_el.inner_text() if text_el else ""
-                if not txt or is_duplicate(txt, posted_cache) or is_promotional(txt) or is_too_short(txt):
+                if not txt or is_duplicate(txt, posted_cache) or is_promotional(txt) or is_too_short(txt) or is_sports_related(txt):
                     continue
                 age = get_tweet_age_minutes(tweet)
-                if age > 360:
+                if age > 360:       # ৬ ঘণ্টার মধ্যে সীমাবদ্ধ
                     continue
                 like_btn = tweet.query_selector('button[data-testid="like"]')
                 likes = parse_count(like_btn.inner_text()) if like_btn else 0
@@ -989,7 +1067,7 @@ def perform_post_only(page, posted_cache):
         print("\n⚠️ No new posts found.")
         return False
 
-    top_candidates = sorted(candidates, key=lambda x: x['likes'], reverse=True)[:5]
+    top_candidates = select_shortlist_for_ai(candidates, top_n=10)
     best_tweet = ai_select_best_tweet(top_candidates)
     if best_tweet is None:
         best_tweet = max(candidates, key=lambda x: x['score'])
@@ -1175,7 +1253,7 @@ def run_bot_loop():
             );
         """)
 
-        print(f"\n🤖 News Bot started (Post-Only Mode) — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"\n🤖 News Bot started (Post-Only Mode) — {datetime.now(BD_TZ).strftime('%Y-%m-%d %H:%M:%S')} (BD time)")
         iteration = 0
         SIESTA_EVERY = 1000   # সিয়েস্তা কার্যত বন্ধ (অনেক উঁচু মান)
 
@@ -1201,8 +1279,8 @@ def run_bot_loop():
                 continue
 
             iteration += 1
-            now = datetime.now()
-            print(f"\n🔄 Post iteration {iteration} — {now.strftime('%H:%M:%S')}", flush=True)
+            now = datetime.now(BD_TZ)
+            print(f"\n🔄 Post iteration {iteration} — {now.strftime('%H:%M:%S')} (BD time)", flush=True)
 
             posted_cache = load_cache(POSTED_CACHE)
 
