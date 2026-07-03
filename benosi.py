@@ -610,8 +610,15 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
                     last_block = blocks[-1]
                     page.evaluate(
                         """(el) => {
-                            el.querySelectorAll('a').forEach(a => {
-                                a.replaceWith(document.createTextNode(' '));
+                            // সাইটেশন নাম্বার (<a>) সরানো
+                            el.querySelectorAll('a').forEach(a => a.remove());
+                            // সাইটেশনের আইকন/ড্যাশ-র‍্যাপার স্প্যান সরানো (cursor:pointer দিয়ে চেনা যায়,
+                            // সাধারণ বাক্যের span-এ কখনো এই ইনলাইন স্টাইল থাকে না)
+                            el.querySelectorAll('span[style]').forEach(sp => {
+                                const st = (sp.getAttribute('style') || '').replace(/\\s+/g, '');
+                                if (st.includes('cursor:pointer')) {
+                                    sp.remove();
+                                }
                             });
                         }""",
                         last_block,
@@ -751,7 +758,7 @@ def _trim_no_ellipsis(caption: str, max_chars=217) -> str:
     return portion
 
 def build_final_caption(original_text, has_video=False, context=None):
-    prompt = f"""Search web, rewrite this into TWO sentence under 220 total characters with key facts. No extra words. then choose the best label.
+    prompt = f"""Search web, rewrite this into ONE sentence under 220 total characters with key facts only. No extra words. then choose the best label.
 RULES FOR LABEL:
 
 - BREAKING → urgent news, military developments, major political events (DEFAULT)
@@ -1255,7 +1262,7 @@ def run_bot_loop():
 
         print(f"\n🤖 News Bot started (Post-Only Mode) — {datetime.now(BD_TZ).strftime('%Y-%m-%d %H:%M:%S')} (BD time)")
         iteration = 0
-        SIESTA_EVERY = 1000   # সিয়েস্তা কার্যত বন্ধ (অনেক উঁচু মান)
+        SIESTA_EVERY = 1000   # সিয়েস্তা কার্যত বন্ধ (অনেক উঁচু মান)
 
         while True:
             target, current = get_daily_limit()
