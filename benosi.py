@@ -758,7 +758,7 @@ def _trim_no_ellipsis(caption: str, max_chars=217) -> str:
     return portion
 
 def build_final_caption(original_text, has_video=False, context=None):
-    prompt = f"""Search web, rewrite this into ONE sentence under 220 total characters with key facts only. No extra words. then choose the best label.
+    prompt = f"""Search web, rewrite this into TWO sentence under 220 total characters with key facts only. No extra words. then choose the best label.
 RULES FOR LABEL:
 
 - BREAKING → urgent news, military developments, major political events (DEFAULT)
