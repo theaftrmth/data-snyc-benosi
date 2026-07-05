@@ -624,7 +624,11 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
                         last_block,
                     )
                     txt = last_block.inner_text().strip()
-                    txt = " ".join(txt.split())
+                    # প্রতিটা লাইনের ভেতরের বাড়তি স্পেস (citation-stripping-এর অবশিষ্টাংশ) পরিষ্কার করি,
+                    # কিন্তু ব্লাংক-লাইন (প্যারাগ্রাফ বিভাজন) অক্ষত রাখি — দুই-বাক্য ফরম্যাটের জন্য জরুরি
+                    lines = [" ".join(line.split()) for line in txt.splitlines()]
+                    txt = "\n".join(lines)
+                    txt = re.sub(r'\n{3,}', '\n\n', txt).strip()
                     if txt:
                         if txt == last_text:
                             stable_count += 1
@@ -717,77 +721,27 @@ Example: 2"""
 
 # ──────────────────────────────────────────────
 # CAPTION GENERATION (DeepSeek, fallback = original text)
+# লেবেল (BREAKING/WATCH/...) সিস্টেম বাদ — এখন শুধু দুই-বাক্যের প্লেইন ফরম্যাট
 # ──────────────────────────────────────────────
-LABEL_KEYWORDS = {
-    "DEVELOPING": ["developing", "ongoing", "unfolding", "continues", "still"],
-    "INTERESTING": ["interesting", "surprising", "unexpected", "unusual", "curious", "remarkable"],
-}
+def build_final_caption(original_text, context=None):
+    prompt = f"""Think step by step: Internally create 3 distinct drafts, each exactly two sentences under 240 total characters with key facts. Then critically compare them—check for conciseness, factual accuracy, and strict character limit. Select the best one or merge the strongest parts into a single final version. After that, output only the final two sentences in the format below, with no extra text.
 
-def _fallback_label(text, has_video=False):
-    lower = text.lower()
-    for label, keywords in LABEL_KEYWORDS.items():
-        if any(kw in lower for kw in keywords):
-            return label
-    if has_video and any(kw in lower for kw in ["watch", "footage", "video", "seen"]):
-        return "WATCH"
-    return "BREAKING"
+Search web, rewrite this into TWO sentence under 240 total characters with key facts only. No extra words. 
+If web search fails, rewrite my given text cleanly instead.
 
-def _label_emoji(label):
-    return {
-        "BREAKING": "🚨",
-        "DEVELOPING": "🔄",
-        "WATCH": "⚠️",
-        "INTERESTING": "🔍",
-    }.get(label, "🚨")
+CRITICAL FORMAT RULES:
+- Output exactly two lines separated by one blank line.
+- First line: first sentence.
+- Leave a blank line.
+- Third line: second sentence.
 
-def _fix_double_colon(caption):
-    match = re.match(r'^([A-Z][a-zA-Z\s]{1,30}):\s+(.+)$', caption)
-    if match:
-        name_part = match.group(1).strip()
-        rest = match.group(2).strip()
-        return f"{name_part} {rest}" if rest.startswith('"') else f"{name_part} says {rest}"
-    return caption
+Example of correct output:
 
-def _trim_no_ellipsis(caption: str, max_chars=217) -> str:
-    if len(caption) <= max_chars:
-        return caption
-    portion = caption[:max_chars]
-    last_space = portion.rfind(' ')
-    if last_space > 0:
-        return portion[:last_space]
-    return portion
+France successfully test-fired an M51.3 ballistic missile from a nuclear submarine.
 
-def build_final_caption(original_text, has_video=False, context=None):
-    prompt = f"""Search web, rewrite this into TWO sentence under 220 total characters with key facts only. No extra words. then choose the best label.
-RULES FOR LABEL:
+The missile flew 6,000 km to the Atlantic, reinforcing France's nuclear deterrence capability.
 
-- BREAKING → urgent news, military developments, major political events (DEFAULT)
-
-- DEVELOPING → active, fast-changing situations
-
-- INTERESTING → surprising facts, but not immediately urgent
-
-- WATCH → ONLY if the tweet has video footage
-
-
-{"VIDEO ATTACHED — WATCH label is allowed if it fits." if has_video else "NO VIDEO ATTACHED — do NOT use WATCH. Use BREAKING instead."}
-
-
-OUTPUT FORMAT (Strictly match this layout, nothing else):
-
-LABEL|rewritten text
-
-
-Examples:
-
-BREAKING|Trump warns Iran of consequences unlike anything seen before if nuclear talks fail
-
-INTERESTING|North Korea quietly tested a new ICBM variant — US intel confirms
-
-DEVELOPING|Clashes ongoing near Kharkiv as ceasefire talks remain stalled
-
-
-Tweet:
+Tweet
 
 {original_text}"""
 
@@ -797,37 +751,22 @@ Tweet:
         result = None
 
     if result:
-        if "|" in result:
-            parts = result.split("|", 1)
-            label = parts[0].strip().upper()
-            caption = parts[1].strip() if len(parts) > 1 else ""
+        # ব্লাংক-লাইন দিয়ে ভাগ করে দুইটা বাক্য বের করা।
+        # DeepSeek যদি ভুলে প্রিঅ্যাম্বল যোগ করে ফেলে, শেষের দুইটা প্যারাগ্রাফই আসল বাক্য হওয়ার সম্ভাবনা বেশি।
+        parts = [p.strip() for p in re.split(r'\n\s*\n', result) if p.strip()]
+
+        if len(parts) >= 2:
+            caption = f"{parts[-2]}\n\n{parts[-1]}"
+        elif len(parts) == 1:
+            caption = parts[0]
         else:
-            label = ""
-            caption = result.strip()
+            caption = clean_text(original_text)
 
-        caption = re.sub(
-            r'^(BREAKING|DEVELOPING|WATCH|INTERESTING)\s*(says|:|\|)?\s*',
-            '', caption, flags=re.IGNORECASE
-        ).strip()
+        return caption
 
-        if label not in {"BREAKING", "DEVELOPING", "WATCH", "INTERESTING"}:
-            label = _fallback_label(original_text, has_video)
-        if label == "WATCH" and not has_video:
-            label = "BREAKING"
-
-        if not caption:
-            caption = clean_text(original_text[:220])
-
-        caption = _fix_double_colon(caption)
-        caption = _trim_no_ellipsis(caption, max_chars=217)
-        return f"{_label_emoji(label)} {label} | {caption}"
-
-    # ── ফলব্যাক: সরাসরি অরিজিনাল টেক্সট, কোনো লেবেল/রিরাইটিং ছাড়া ──
+    # ── ফলব্যাক: সরাসরি অরিজিনাল টেক্সট ──
     print("  ⚠️ DeepSeek failed, posting original tweet text as fallback...")
-    fallback = clean_text(original_text)
-    if len(fallback) > 280:
-        fallback = fallback[:277] + "..."
-    return fallback
+    return clean_text(original_text)
 
 # ──────────────────────────────────────────────
 # HUMAN-LIKE MOUSE MOVEMENT & TYPING
@@ -1142,9 +1081,7 @@ def perform_post_only(page, posted_cache):
         print(f"  🎥 Video: {has_video}, 🖼 Media: {len(media_paths) if isinstance(media_paths, list) else 0} files")
 
     print("  🤖 Generating caption...")
-    final_caption = build_final_caption(original_text, has_video=has_video, context=context)
-    if len(final_caption) > 250:
-        final_caption = final_caption[:247] + "..."
+    final_caption = build_final_caption(original_text, context=context)
     print(f"  ✅ Caption: {final_caption}")
 
     print("\n📤 Posting...")
