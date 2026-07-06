@@ -11,7 +11,7 @@ import pytz
 from playwright.sync_api import sync_playwright
 import g4f
 
-BD_TZ = pytz.timezone("Asia/Dhaka")  # human_delay-এর hour bucket যাতে লোকাল টাইম অনুযায়ী কাজ করে
+BD_TZ = pytz.timezone("Asia/Dhaka")
 
 # ──────────────────────────────────────────────
 # SOURCES (from env SOURCES)
@@ -51,7 +51,7 @@ def get_daily_limit():
                 return data["target"], data["count"]
         except:
             pass
-    target = random.randint(28, 32)          # দ্বিগুণ পোস্ট
+    target = random.randint(28, 32)
     data = {"date": today_str, "target": target, "count": 0}
     with open(DAILY_LIMIT_FILE, "w") as f:
         json.dump(data, f)
@@ -234,7 +234,6 @@ def is_promotional(text):
 def is_too_short(text, min_chars=40):
     return len(text.strip()) < min_chars
 
-# স্পোর্টস-সম্পর্কিত টুইট বাদ দেওয়ার জন্য হার্ড ফিল্টার (AI প্রম্পটের উপর নির্ভর না করে)
 SPORTS_KEYWORDS = [
     "world cup", "football match", "soccer", "premier league", "la liga",
     "serie a", "bundesliga", "champions league", "europa league",
@@ -371,7 +370,7 @@ def score_tweet(text, likes, views=0, age_minutes=9999):
     return score
 
 # ──────────────────────────────────────────────
-# VIDEO / MEDIA
+# VIDEO / MEDIA (updated: no limits, mixed media support)
 # ──────────────────────────────────────────────
 def check_video_in_article(page, tweet_index):
     try:
@@ -407,34 +406,55 @@ def download_media(url, filename):
         print(f"  ❌ Image download failed: {e}")
     return None
 
-def download_video_with_ytdlp(tweet_url, max_attempts=3):
+def download_videos_from_tweet(tweet_url, max_attempts=3):
+    """
+    yt‑dlp দিয়ে টুইট থেকে সব কয়টি ভিডিও ডাউনলোড করে ফাইলপাথের লিস্ট রিটার্ন করে।
+    (টুইটার প্রতি টুইটে সর্বোচ্চ ৪টি মিডিয়াই দেয়, তাই আলাদা লিমিট ছাড়াই সব আসবে)
+    """
     if not tweet_url:
-        return None
+        return []
+    base_name = os.path.join(MEDIA_DIR, f"video_{int(time.time())}")
     for attempt in range(1, max_attempts + 1):
         try:
-            out_path = os.path.join(MEDIA_DIR, f"video_{int(time.time())}_{attempt}.mp4")
             cmd = [
                 "yt-dlp", "--no-playlist",
+                "--playlist-start", "1",
                 "--format", "mp4/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
                 "--merge-output-format", "mp4",
-                "--output", out_path,
+                "--output", base_name + "_%(playlist_index)s.%(ext)s",
                 "--quiet", "--no-warnings",
                 "--socket-timeout", "30",
                 tweet_url,
             ]
-            result = subprocess.run(cmd, timeout=60, capture_output=True, text=True)
-            if result.returncode == 0 and os.path.exists(out_path):
-                size = os.path.getsize(out_path)
-                print(f"  📥 Video downloaded: {size // 1024}KB")
-                if size == 0:
-                    print("  ⚠️ Downloaded file is 0 bytes, skipping.")
-                    os.remove(out_path)
-                    return None
-                if size > 100 * 1024 * 1024:
-                    print("  ⚠️ Video too large (100MB+), skip.")
-                    os.remove(out_path)
-                    return "TOO_LARGE"
-                return out_path
+            result = subprocess.run(cmd, timeout=120, capture_output=True, text=True)
+            if result.returncode == 0:
+                video_files = []
+                i = 1
+                while True:
+                    fname = f"{base_name}_{i}.mp4"
+                    if os.path.exists(fname):
+                        size = os.path.getsize(fname)
+                        if size == 0:
+                            os.remove(fname)
+                            i += 1
+                            continue
+                        if size > 100 * 1024 * 1024:
+                            print(f"  ⚠️ Video {i} too large (100MB+), skipping tweet.")
+                            for vf in video_files:
+                                try: os.remove(vf)
+                                except: pass
+                            try: os.remove(fname)
+                            except: pass
+                            return "TOO_LARGE"
+                        video_files.append(fname)
+                        i += 1
+                    else:
+                        break
+                if video_files:
+                    print(f"  📥 Downloaded {len(video_files)} video(s): {[os.path.basename(v) for v in video_files]}")
+                    return video_files
+                else:
+                    print("  ⚠️ yt-dlp ran but no video files found.")
             else:
                 print(f"  ❌ yt-dlp failed (attempt {attempt}/{max_attempts}): {result.stderr[:200]}")
                 if attempt < max_attempts:
@@ -445,33 +465,40 @@ def download_video_with_ytdlp(tweet_url, max_attempts=3):
                 time.sleep(random.uniform(4, 8))
         except FileNotFoundError:
             print("  ❌ yt-dlp not installed.")
-            return None
+            return []
         except Exception as e:
             print(f"  ❌ Video download error (attempt {attempt}/{max_attempts}): {e}")
             if attempt < max_attempts:
                 time.sleep(random.uniform(4, 8))
-    return None
+    return []
 
 def extract_media_urls_safely(page, tweet_index):
+    """
+    টুইটে থাকা সব মিডিয়া (ভিডিও + ছবি) ডাউনলোড করে ফাইলপাথের লিস্ট রিটার্ন করে।
+    ভিডিও ও ছবি একসাথে থাকলেও উভয়ই সংগ্রহ করবে, সর্বোচ্চ ৪টি পর্যন্ত (টুইটারের লিমিট)।
+    """
     media_paths = []
     try:
+        # ---------- ১. ভিডিও ডাউনলোড ----------
         has_vid = check_video_in_article(page, tweet_index)
         if has_vid:
             tweet_url = get_tweet_url_from_article(page, tweet_index)
-            print(f"  🎬 Video detected, yt-dlp: {tweet_url}")
+            print(f"  🎬 Video(s) detected, downloading all with yt-dlp: {tweet_url}")
             if tweet_url:
-                vpath = download_video_with_ytdlp(tweet_url)
-                if vpath == "TOO_LARGE":
-                    return "TOO_LARGE"
-                if vpath:
-                    return [vpath]
-            print("  ⚠️ Video failed, trying images...")
+                video_paths = download_videos_from_tweet(tweet_url)
+                if video_paths == "TOO_LARGE":
+                    return "TOO_LARGE"                     # পুরো টুইট স্কিপ
+                if video_paths:
+                    media_paths.extend(video_paths)        # ভিডিওগুলো যোগ
+            else:
+                print("  ⚠️ Tweet URL not found, skipping video download.")
 
+        # ---------- ২. ছবি ডাউনলোড ----------
         urls = page.evaluate(f"""() => {{
             const a = document.querySelectorAll('article[data-testid="tweet"]')[{tweet_index}];
             if (!a) return [];
             const imgs = a.querySelectorAll('img[src*="pbs.twimg.com/media"]');
-            return Array.from(imgs).slice(0, 4).map(i => i.src);
+            return Array.from(imgs).map(i => i.src);
         }}""")
 
         for i, src in enumerate(urls or []):
@@ -481,8 +508,20 @@ def extract_media_urls_safely(page, tweet_index):
                 media_paths.append(path)
                 print(f"  📥 Image {i+1} downloaded.")
 
+        # ---------- ৩. সেফটি ট্রিম (টুইটারের সর্বোচ্চ ৪টি মিডিয়া) ----------
+        if len(media_paths) > 4:
+            print(f"  ⚠️ Combined media count {len(media_paths)} exceeds 4, trimming to first 4.")
+            # ডিস্কে থাকা অতিরিক্ত ফাইল মুছে ফেলা
+            for extra in media_paths[4:]:
+                try:
+                    os.remove(extra)
+                except:
+                    pass
+            media_paths = media_paths[:4]
+
     except Exception as e:
         print(f"  ⚠️ Media extract error: {e}")
+
     return media_paths
 
 def find_matching_tweet_index(page, target_text, search_range=10):
@@ -610,10 +649,7 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
                     last_block = blocks[-1]
                     page.evaluate(
                         """(el) => {
-                            // সাইটেশন নাম্বার (<a>) সরানো
                             el.querySelectorAll('a').forEach(a => a.remove());
-                            // সাইটেশনের আইকন/ড্যাশ-র‍্যাপার স্প্যান সরানো (cursor:pointer দিয়ে চেনা যায়,
-                            // সাধারণ বাক্যের span-এ কখনো এই ইনলাইন স্টাইল থাকে না)
                             el.querySelectorAll('span[style]').forEach(sp => {
                                 const st = (sp.getAttribute('style') || '').replace(/\\s+/g, '');
                                 if (st.includes('cursor:pointer')) {
@@ -624,8 +660,6 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
                         last_block,
                     )
                     txt = last_block.inner_text().strip()
-                    # প্রতিটা লাইনের ভেতরের বাড়তি স্পেস (citation-stripping-এর অবশিষ্টাংশ) পরিষ্কার করি,
-                    # কিন্তু ব্লাংক-লাইন (প্যারাগ্রাফ বিভাজন) অক্ষত রাখি — দুই-বাক্য ফরম্যাটের জন্য জরুরি
                     lines = [" ".join(line.split()) for line in txt.splitlines()]
                     txt = "\n".join(lines)
                     txt = re.sub(r'\n{3,}', '\n\n', txt).strip()
@@ -721,13 +755,14 @@ Example: 2"""
 
 # ──────────────────────────────────────────────
 # CAPTION GENERATION (DeepSeek, fallback = original text)
-# লেবেল (BREAKING/WATCH/...) সিস্টেম বাদ — এখন শুধু দুই-বাক্যের প্লেইন ফরম্যাট
 # ──────────────────────────────────────────────
 def build_final_caption(original_text, context=None):
-    prompt = f"""Think step by step: Internally create 3 distinct drafts, each exactly two sentences under 240 total characters with key facts. Then critically compare them—check for conciseness, factual accuracy, and strict character limit. Select the best one or merge the strongest parts into a single final version. After that, output only the final two sentences in the format below, with no extra text.
+    prompt = f"""IMPORTANT: All output must be in simple words.
 
-Search web, rewrite this into TWO sentence under 240 total characters with key facts only. No extra words. 
-If web search fails, rewrite my given text cleanly instead.
+Think step by step: Internally create 3 distinct drafts, each exactly two sentences under 240 total characters with key facts, in simple words. Then critically compare them—check for conciseness, factual accuracy, and strict character limit. Select the best one or merge the strongest parts into a single final version. After that, output only the final two sentences in the format below, with no extra text.
+
+Search web, rewrite this into TWO sentence under 240 total characters with key facts only, in simple words. No extra words.
+If web search fails, or the topic is unclear from the given text, rewrite the given text cleanly in simple words instead.
 
 CRITICAL FORMAT RULES:
 - Output exactly two lines separated by one blank line.
@@ -751,17 +786,13 @@ Tweet
         result = None
 
     if result:
-        # ব্লাংক-লাইন দিয়ে ভাগ করে দুইটা বাক্য বের করা।
-        # DeepSeek যদি ভুলে প্রিঅ্যাম্বল যোগ করে ফেলে, শেষের দুইটা প্যারাগ্রাফই আসল বাক্য হওয়ার সম্ভাবনা বেশি।
         parts = [p.strip() for p in re.split(r'\n\s*\n', result) if p.strip()]
-
         if len(parts) >= 2:
             caption = f"{parts[-2]}\n\n{parts[-1]}"
         elif len(parts) == 1:
             caption = parts[0]
         else:
             caption = clean_text(original_text)
-
         return caption
 
     # ── ফলব্যাক: সরাসরি অরিজিনাল টেক্সট ──
@@ -792,7 +823,7 @@ def human_type(element, text):
     time.sleep(random.uniform(0.5, 1.2))
 
 # ──────────────────────────────────────────────
-# POSTING
+# POSTING — attaches multiple media files in a single operation
 # ──────────────────────────────────────────────
 def type_and_submit(page, text, media_paths):
     viewport = page.viewport_size
@@ -806,54 +837,35 @@ def type_and_submit(page, text, media_paths):
     page.wait_for_timeout(random.randint(800, 1500))
 
     if media_paths:
-        has_video = False
-        for mp in media_paths:
+        attach_btn = page.query_selector('button[aria-label="Add photos or video"]')
+        if attach_btn:
             try:
-                attach_btn = page.query_selector('button[aria-label="Add photos or video"]')
-                if attach_btn:
-                    with page.expect_file_chooser(timeout=10000) as fc_info:
-                        attach_btn.click()
-                    file_chooser = fc_info.value
-                    file_chooser.set_files(mp)
-                    if mp.lower().endswith('.mp4'):
-                        has_video = True
-                        print(f"  🎞 Video file queued: {os.path.basename(mp)}")
-                    else:
-                        print(f"  📎 Image queued: {os.path.basename(mp)}")
+                with page.expect_file_chooser(timeout=15000) as fc_info:
+                    attach_btn.click()
+                file_chooser = fc_info.value
+                file_chooser.set_files(media_paths)          # একসঙ্গে সব ফাইল
+                print(f"  🎞 {len(media_paths)} media file(s) queued.")
+                has_video = any(mp.lower().endswith('.mp4') for mp in media_paths)
+                if has_video:
+                    page.wait_for_timeout(3000)
+                    try:
+                        page.wait_for_selector('div[data-testid="attachments"]', timeout=30000)
+                        print("  ✅ Attachment container found.")
+                    except:
+                        print("  ⚠️ Attachment container not found.")
+                        page.screenshot(path=f"attach_fail_{int(time.time())}.png")
+                    page.wait_for_timeout(45000)
+                    try:
+                        page.wait_for_selector('div[data-testid="attachments"] video', timeout=15000)
+                        print("  ✅ Video preview confirmed.")
+                    except:
+                        print("  ⚠️ Preview not confirmed, continuing anyway.")
                 else:
-                    print(f"  ⚠️ Attach button not found.")
+                    page.wait_for_timeout(random.randint(3000, 5000))
             except Exception as e:
                 print(f"  ⚠️ Media attach error: {e}")
-
-        if has_video:
-            page.wait_for_timeout(3000)
-            attached = False
-            try:
-                page.wait_for_selector(
-                    'div[data-testid="attachments"]',
-                    timeout=30000
-                )
-                attached = True
-                print("  ✅ Attachment container found.")
-            except:
-                print("  ⚠️ Attachment container not found.")
-                page.screenshot(path=f"attach_fail_{int(time.time())}.png")
-
-            if attached:
-                page.wait_for_timeout(45000)
-                try:
-                    page.wait_for_selector(
-                        'div[data-testid="attachments"] video',
-                        timeout=15000
-                    )
-                    print("  ✅ Video preview confirmed.")
-                except:
-                    print("  ⚠️ Preview not confirmed, continuing anyway.")
-            else:
-                print("  ⚠️ Skipping media, posting text only.")
-            page.wait_for_timeout(2000)
         else:
-            page.wait_for_timeout(random.randint(3000, 5000))
+            print("  ⚠️ Attach button not found.")
 
     try:
         btn = page.wait_for_selector('div[data-testid="tweetButtonInline"]', timeout=8000)
@@ -913,10 +925,9 @@ def simulate_scroll(page):
         print(f"  ⚠️ Scroll error: {e}")
 
 # ──────────────────────────────────────────────
-# STOCHASTIC FAIR TOP-N SELECTION (small accounts যেন চাপা না পড়ে)
+# STOCHASTIC FAIR TOP-N SELECTION
 # ──────────────────────────────────────────────
 def _weighted_pick_one(cands):
-    """একটা সোর্সের candidate লিস্ট থেকে score-weighted random pick।"""
     if not cands:
         return None
     if len(cands) == 1:
@@ -925,7 +936,6 @@ def _weighted_pick_one(cands):
     return random.choices(cands, weights=weights, k=1)[0]
 
 def _weighted_sample_without_replacement(cands, k):
-    """score-weighted, কিন্তু একই আইটেম দুইবার না নিয়ে k সংখ্যক তুলে আনে।"""
     pool = list(cands)
     chosen = []
     for _ in range(min(k, len(pool))):
@@ -936,11 +946,6 @@ def _weighted_sample_without_replacement(cands, k):
     return chosen
 
 def select_shortlist_for_ai(candidates, top_n=10):
-    """
-    ধাপ ১: প্রতিটা সোর্স থেকে অন্তত একটা টুইট (score-weighted) — ছোট একাউন্টও সুযোগ পায়।
-    ধাপ ২: top_n পূর্ণ না হলে বাকি পুল থেকে score-weighted ভাবে ভরাট করা হয়।
-    ধাপ ৩: সোর্স সংখ্যা top_n-এর বেশি হলে, per-source picks থেকেই weighted-random-এ top_n-এ নামানো হয়।
-    """
     by_source = {}
     for c in candidates:
         by_source.setdefault(c['source'], []).append(c)
@@ -961,7 +966,7 @@ def select_shortlist_for_ai(candidates, top_n=10):
     else:
         shortlist = _weighted_sample_without_replacement(per_source_picks, top_n)
 
-    random.shuffle(shortlist)  # likes-descending ক্রম AI-কে না দেখানোর জন্য
+    random.shuffle(shortlist)
     return shortlist
 
 # ──────────────────────────────────────────────
@@ -995,7 +1000,7 @@ def perform_post_only(page, posted_cache):
                 if not txt or is_duplicate(txt, posted_cache) or is_promotional(txt) or is_too_short(txt) or is_sports_related(txt):
                     continue
                 age = get_tweet_age_minutes(tweet)
-                if age > 360:       # ৬ ঘণ্টার মধ্যে সীমাবদ্ধ
+                if age > 360:
                     continue
                 like_btn = tweet.query_selector('button[data-testid="like"]')
                 likes = parse_count(like_btn.inner_text()) if like_btn else 0
@@ -1107,21 +1112,21 @@ def perform_post_only(page, posted_cache):
         return False
 
 # ──────────────────────────────────────────────
-# HUMAN DELAY FUNCTION (shorter intervals for more posts)
+# HUMAN DELAY FUNCTION
 # ──────────────────────────────────────────────
 def human_delay(iteration, hour):
     if 6 <= hour < 10:
-        base = random.randint(35, 50) * 60      # 35-50 min
+        base = random.randint(35, 50) * 60
     elif 10 <= hour < 16:
-        base = random.randint(40, 55) * 60      # 40-55 min
+        base = random.randint(40, 55) * 60
     elif 16 <= hour < 22:
-        base = random.randint(35, 50) * 60      # 35-50 min
+        base = random.randint(35, 50) * 60
     else:
-        base = random.randint(50, 70) * 60      # 50-70 min
+        base = random.randint(50, 70) * 60
     return base
 
 # ──────────────────────────────────────────────
-# MAIN LOOP (6-hour limit per run, daily limit across runs)
+# MAIN LOOP
 # ──────────────────────────────────────────────
 def run_bot_loop():
     if not validate_session():
@@ -1135,7 +1140,7 @@ def run_bot_loop():
         print("🎯 Today's post limit already reached. Exiting.")
         return
 
-    MAX_DURATION = 6 * 3600   # ৬ ঘণ্টা (GitHub Actions সীমা)
+    MAX_DURATION = 6 * 3600
     start_time = time.time()
 
     with sync_playwright() as p:
@@ -1199,7 +1204,7 @@ def run_bot_loop():
 
         print(f"\n🤖 News Bot started (Post-Only Mode) — {datetime.now(BD_TZ).strftime('%Y-%m-%d %H:%M:%S')} (BD time)")
         iteration = 0
-        SIESTA_EVERY = 1000   # সিয়েস্তা কার্যত বন্ধ (অনেক উঁচু মান)
+        SIESTA_EVERY = 1000
 
         while True:
             target, current = get_daily_limit()
