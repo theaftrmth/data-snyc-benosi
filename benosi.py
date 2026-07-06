@@ -2,6 +2,7 @@ import time
 import random
 import re
 import os
+import glob
 import hashlib
 import requests
 import subprocess
@@ -370,7 +371,7 @@ def score_tweet(text, likes, views=0, age_minutes=9999):
     return score
 
 # ──────────────────────────────────────────────
-# VIDEO / MEDIA (updated: no limits, mixed media support)
+# VIDEO / MEDIA (fixed: reliable multi-video + mixed support)
 # ──────────────────────────────────────────────
 def check_video_in_article(page, tweet_index):
     try:
@@ -408,8 +409,11 @@ def download_media(url, filename):
 
 def download_videos_from_tweet(tweet_url, max_attempts=3):
     """
-    yt‑dlp দিয়ে টুইট থেকে সব কয়টি ভিডিও ডাউনলোড করে ফাইলপাথের লিস্ট রিটার্ন করে।
-    (টুইটার প্রতি টুইটে সর্বোচ্চ ৪টি মিডিয়াই দেয়, তাই আলাদা লিমিট ছাড়াই সব আসবে)
+    yt‑dlp দিয়ে টুইটের সব ভিডিও ডাউনলোড করে ফাইলপাথের লিস্ট রিটার্ন করে।
+    --no-playlist বাদ দেওয়া হয়েছে ইচ্ছাকৃতভাবে: X মাল্টি-ভিডিও টুইটকে অভ্যন্তরীণভাবে
+    "playlist" হিসেবে ট্রিট করে, --no-playlist দিলে yt-dlp শুধু প্রথম ভিডিওটাই নেয়
+    (কখনো কখনো এররও দেয়)। এক্সাক্ট ফিল্ড-নাম/ইনডেক্সিং কনভেনশন নিয়ে অনুমান না করে,
+    ডাউনলোডের পর glob দিয়ে যা কিছু ফাইল তৈরি হয়েছে সেটাই খুঁজে নেওয়া হচ্ছে।
     """
     if not tweet_url:
         return []
@@ -417,8 +421,7 @@ def download_videos_from_tweet(tweet_url, max_attempts=3):
     for attempt in range(1, max_attempts + 1):
         try:
             cmd = [
-                "yt-dlp", "--no-playlist",
-                "--playlist-start", "1",
+                "yt-dlp",
                 "--format", "mp4/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
                 "--merge-output-format", "mp4",
                 "--output", base_name + "_%(playlist_index)s.%(ext)s",
@@ -426,35 +429,33 @@ def download_videos_from_tweet(tweet_url, max_attempts=3):
                 "--socket-timeout", "30",
                 tweet_url,
             ]
-            result = subprocess.run(cmd, timeout=120, capture_output=True, text=True)
+            result = subprocess.run(cmd, timeout=60, capture_output=True, text=True)
             if result.returncode == 0:
-                video_files = []
-                i = 1
-                while True:
-                    fname = f"{base_name}_{i}.mp4"
-                    if os.path.exists(fname):
-                        size = os.path.getsize(fname)
-                        if size == 0:
-                            os.remove(fname)
-                            i += 1
-                            continue
-                        if size > 100 * 1024 * 1024:
-                            print(f"  ⚠️ Video {i} too large (100MB+), skipping tweet.")
-                            for vf in video_files:
-                                try: os.remove(vf)
-                                except: pass
-                            try: os.remove(fname)
-                            except: pass
-                            return "TOO_LARGE"
-                        video_files.append(fname)
-                        i += 1
-                    else:
-                        break
-                if video_files:
-                    print(f"  📥 Downloaded {len(video_files)} video(s): {[os.path.basename(v) for v in video_files]}")
-                    return video_files
-                else:
-                    print("  ⚠️ yt-dlp ran but no video files found.")
+                # ফিল্ড-নাম/ইনডেক্স নিয়ে অনুমান না করে, base_name দিয়ে শুরু হওয়া
+                # যেকোনো mp4 ফাইল glob দিয়ে খুঁজে বের করা হচ্ছে (একক ভিডিওতেও কাজ করবে,
+                # কারণ playlist_index না থাকলে yt-dlp সেই অংশ বাদ দিয়েই ফাইল বানাতে পারে)
+                video_files = sorted(glob.glob(base_name + "_*.mp4"))
+                valid_files = []
+                too_large = False
+                for fname in video_files:
+                    size = os.path.getsize(fname)
+                    if size == 0:
+                        os.remove(fname)
+                        continue
+                    if size > 100 * 1024 * 1024:
+                        print(f"  ⚠️ {os.path.basename(fname)} too large (100MB+), skip tweet.")
+                        too_large = True
+                        continue
+                    valid_files.append(fname)
+                if too_large:
+                    for vf in valid_files:
+                        try: os.remove(vf)
+                        except: pass
+                    return "TOO_LARGE"
+                if valid_files:
+                    print(f"  📥 Downloaded {len(valid_files)} video(s): {[os.path.basename(v) for v in valid_files]}")
+                    return valid_files
+                print(f"  ❌ yt-dlp ran but no video files found (attempt {attempt}/{max_attempts})")
             else:
                 print(f"  ❌ yt-dlp failed (attempt {attempt}/{max_attempts}): {result.stderr[:200]}")
                 if attempt < max_attempts:
@@ -474,8 +475,8 @@ def download_videos_from_tweet(tweet_url, max_attempts=3):
 
 def extract_media_urls_safely(page, tweet_index):
     """
-    টুইটে থাকা সব মিডিয়া (ভিডিও + ছবি) ডাউনলোড করে ফাইলপাথের লিস্ট রিটার্ন করে।
-    ভিডিও ও ছবি একসাথে থাকলেও উভয়ই সংগ্রহ করবে, সর্বোচ্চ ৪টি পর্যন্ত (টুইটারের লিমিট)।
+    টুইটে থাকা সব মিডিয়া (ভিডিও + ছবি) ডাউনলোড করে ফাইলপাথের লিস্ট রিটার্ন করে।
+    ভিডিও ও ছবি একসাথে থাকলে উভয়ই সংগ্রহ করবে, সর্বোচ্চ ৪টি পর্যন্ত (টুইটারের লিমিট)।
     """
     media_paths = []
     try:
@@ -487,9 +488,9 @@ def extract_media_urls_safely(page, tweet_index):
             if tweet_url:
                 video_paths = download_videos_from_tweet(tweet_url)
                 if video_paths == "TOO_LARGE":
-                    return "TOO_LARGE"                     # পুরো টুইট স্কিপ
+                    return "TOO_LARGE"
                 if video_paths:
-                    media_paths.extend(video_paths)        # ভিডিওগুলো যোগ
+                    media_paths.extend(video_paths)
             else:
                 print("  ⚠️ Tweet URL not found, skipping video download.")
 
@@ -508,10 +509,9 @@ def extract_media_urls_safely(page, tweet_index):
                 media_paths.append(path)
                 print(f"  📥 Image {i+1} downloaded.")
 
-        # ---------- ৩. সেফটি ট্রিম (টুইটারের সর্বোচ্চ ৪টি মিডিয়া) ----------
+        # ---------- ৩. সেফটি ট্রিম (টুইটারের সর্বোচ্চ ৪টি মিডিয়া) ----------
         if len(media_paths) > 4:
             print(f"  ⚠️ Combined media count {len(media_paths)} exceeds 4, trimming to first 4.")
-            # ডিস্কে থাকা অতিরিক্ত ফাইল মুছে ফেলা
             for extra in media_paths[4:]:
                 try:
                     os.remove(extra)
@@ -727,7 +727,7 @@ def ai_select_best_tweet(tweet_list):
         for t in tweet_list:
             shortlist.append({
                 "source": t["source"],
-                "text": t["text"][:150]
+                "text": t["text"][:4000]     # full tweet context with safe limit
             })
         prompt = f"""You are a sharp geopolitical news editor for X/Twitter.
 Below are tweets from breaking news sources. Pick the ONE tweet that is the most newsworthy, urgent, and likely to get high engagement.
