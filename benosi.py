@@ -37,10 +37,11 @@ POSTED_CACHE = "posted_cache.txt"
 REPLIED_CACHE = "replied_cache.txt"
 CAPTCHA_LOCK_FILE = "captcha_lock.txt"
 DAILY_LIMIT_FILE = "daily_post_limit.json"
+TOPIC_MEMORY_FILE = "topic_memory.json"
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
 # ──────────────────────────────────────────────
-# DAILY POST LIMIT (28–32 posts per day)
+# DAILY POST LIMIT (40–48 posts per day)
 # ──────────────────────────────────────────────
 def get_daily_limit():
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -52,7 +53,7 @@ def get_daily_limit():
                 return data["target"], data["count"]
         except:
             pass
-    target = random.randint(28, 32)
+    target = random.randint(40, 48)          # new daily target
     data = {"date": today_str, "target": target, "count": 0}
     with open(DAILY_LIMIT_FILE, "w") as f:
         json.dump(data, f)
@@ -239,9 +240,9 @@ SPORTS_KEYWORDS = [
     "world cup", "football match", "soccer", "premier league", "la liga",
     "serie a", "bundesliga", "champions league", "europa league",
     "fifa", "uefa", "ballon d'or", "transfer window", "hat-trick", "hattrick",
-    "red card", "yellow card", "offside", "penalty shootout", "penalty kick",
-    "extra time", "round of 16", "round of sixteen", "round of 32",
-    "quarterfinal", "quarter-final", "semifinal", "semi-final",
+    "red card", "yellow card", "xi jinping", "penalty shootout", "penalty kick",
+    "extra time", "Xi", "round of sixteen", "round of 32",
+    "quarterfinal", "jinping", "semifinal", "semi-final",
     "relegation", "kickoff", "kick-off", "halftime", "half-time",
     "full-time whistle", "fulltime", "nba", "nfl", "mlb", "nhl",
     "wimbledon", "grand prix", "formula 1", "f1 race", "ufc", "boxing match",
@@ -362,13 +363,61 @@ def score_tweet(text, likes, views=0, age_minutes=9999):
         score += 15
     elif age_minutes <= 120:
         score += 5
-    elif age_minutes > 360:
+    elif age_minutes > 240:          # 4-hour cutoff
         score -= 20
     if is_promotional(text):
         score -= 100
     if is_too_short(text):
         score -= 50
     return score
+
+# ──────────────────────────────────────────────
+# TOPIC MEMORY (short-term duplicate topic prevention)
+# ──────────────────────────────────────────────
+STOPWORDS = {
+    "the", "is", "at", "which", "on", "a", "an", "and", "or", "but",
+    "in", "with", "to", "for", "of", "by", "from", "as", "into",
+    "about", "like", "after", "before", "between", "under", "over",
+    "out", "up", "down", "off", "no", "not", "its", "it's", "that",
+    "this", "was", "are", "were", "been", "be", "have", "has", "had",
+    "do", "does", "did", "will", "would", "could", "should", "may",
+    "can", "said", "says", "new", "just", "now", "very", "also",
+    "more", "some", "BREAKING", "Iran", "US", "USA", "next", "back",
+    "still", "already", "yet", "all", "both", "each", "every", "other",
+    "many", "much", "such", "only", "then", "than", "too", "here",
+    "there", "when", "where", "why", "how"
+}
+
+def extract_keywords(text):
+    words = re.findall(r'[a-zA-Z]+', text.lower())
+    return {w for w in words if w not in STOPWORDS and len(w) > 2}
+
+def load_topic_memory():
+    if not os.path.exists(TOPIC_MEMORY_FILE):
+        return []
+    try:
+        with open(TOPIC_MEMORY_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return []
+
+def save_topic_memory(memory):
+    cutoff = time.time() - 4 * 3600
+    memory = [m for m in memory if m["time"] > cutoff]
+    with open(TOPIC_MEMORY_FILE, "w") as f:
+        json.dump(memory, f)
+
+def is_similar_topic(text, memory, min_overlap=3):
+    keywords = extract_keywords(text)
+    for mem in memory:
+        if len(keywords & set(mem["keywords"])) >= min_overlap:
+            return True
+    return False
+
+def add_to_topic_memory(text):
+    memory = load_topic_memory()
+    memory.append({"time": time.time(), "keywords": list(extract_keywords(text))})
+    save_topic_memory(memory)
 
 # ──────────────────────────────────────────────
 # VIDEO / MEDIA (fixed: reliable multi-video + mixed support)
@@ -408,13 +457,6 @@ def download_media(url, filename):
     return None
 
 def download_videos_from_tweet(tweet_url, max_attempts=3):
-    """
-    yt‑dlp দিয়ে টুইটের সব ভিডিও ডাউনলোড করে ফাইলপাথের লিস্ট রিটার্ন করে।
-    --no-playlist বাদ দেওয়া হয়েছে ইচ্ছাকৃতভাবে: X মাল্টি-ভিডিও টুইটকে অভ্যন্তরীণভাবে
-    "playlist" হিসেবে ট্রিট করে, --no-playlist দিলে yt-dlp শুধু প্রথম ভিডিওটাই নেয়
-    (কখনো কখনো এররও দেয়)। এক্সাক্ট ফিল্ড-নাম/ইনডেক্সিং কনভেনশন নিয়ে অনুমান না করে,
-    ডাউনলোডের পর glob দিয়ে যা কিছু ফাইল তৈরি হয়েছে সেটাই খুঁজে নেওয়া হচ্ছে।
-    """
     if not tweet_url:
         return []
     base_name = os.path.join(MEDIA_DIR, f"video_{int(time.time())}")
@@ -431,9 +473,6 @@ def download_videos_from_tweet(tweet_url, max_attempts=3):
             ]
             result = subprocess.run(cmd, timeout=60, capture_output=True, text=True)
             if result.returncode == 0:
-                # ফিল্ড-নাম/ইনডেক্স নিয়ে অনুমান না করে, base_name দিয়ে শুরু হওয়া
-                # যেকোনো mp4 ফাইল glob দিয়ে খুঁজে বের করা হচ্ছে (একক ভিডিওতেও কাজ করবে,
-                # কারণ playlist_index না থাকলে yt-dlp সেই অংশ বাদ দিয়েই ফাইল বানাতে পারে)
                 video_files = sorted(glob.glob(base_name + "_*.mp4"))
                 valid_files = []
                 too_large = False
@@ -474,10 +513,6 @@ def download_videos_from_tweet(tweet_url, max_attempts=3):
     return []
 
 def extract_media_urls_safely(page, tweet_index):
-    """
-    টুইটে থাকা সব মিডিয়া (ভিডিও + ছবি) ডাউনলোড করে ফাইলপাথের লিস্ট রিটার্ন করে।
-    ভিডিও ও ছবি একসাথে থাকলে উভয়ই সংগ্রহ করবে, সর্বোচ্চ ৪টি পর্যন্ত (টুইটারের লিমিট)।
-    """
     media_paths = []
     try:
         # ---------- ১. ভিডিও ডাউনলোড ----------
@@ -727,17 +762,17 @@ def ai_select_best_tweet(tweet_list):
         for t in tweet_list:
             shortlist.append({
                 "source": t["source"],
-                "text": t["text"][:4000]     # full tweet context with safe limit
+                "text": t["text"][:4000]
             })
         prompt = f"""You are a sharp geopolitical news editor for X/Twitter.
 Below are tweets from breaking news sources. Pick the ONE tweet that is the most newsworthy, urgent, and likely to get high engagement.
 
 Consider:
-- Global impact, surprise, conflict, diplomatic moves.
-- Uniqueness (not just a reaction).
-- Relevance right now.
+- Global geopolitical significance and urgency.
+- High public interest and potential engagement.
+- No reaction tweets.
 
-STRICT EXCLUSION: Do NOT select any sports-related tweet (football/soccer World Cup, matches, scores, goals, transfers, players, tournaments, etc.).
+STRICT EXCLUSION: Do NOT select any sports-related tweet.
 
 Tweets:
 {json.dumps(shortlist, indent=2, ensure_ascii=False)}
@@ -754,27 +789,27 @@ Example: 2"""
     return None
 
 # ──────────────────────────────────────────────
-# CAPTION GENERATION (DeepSeek, fallback = original text)
+# CAPTION GENERATION (DeepSeek, updated prompt)
 # ──────────────────────────────────────────────
 def build_final_caption(original_text, context=None):
     prompt = f"""IMPORTANT: All output must be in simple words.
 
-Think step by step: Internally create 3 distinct drafts, each exactly two sentences under 240 total characters with key facts, in simple words. Then critically compare them—check for conciseness, factual accuracy, and strict character limit. Select the best one or merge the strongest parts into a single final version. After that, output only the final two sentences in the format below, with no extra text.
+Think step by step: Internally create 3 distinct drafts, each with a short title and a detailed sentence under 240 total characters with key facts, in simple words. Then critically compare them—check for conciseness, factual accuracy, and strict character limit. Select the best one or merge the strongest parts into a single final version. After that, output only the final two lines in the format below, with no extra text.
 
-Search web, rewrite this into TWO sentence under 240 total characters with key facts only, in simple words. No extra words.
-If web search fails, or the topic is unclear from the given text, rewrite the given text cleanly in simple words instead.
+Search web, rewrite this into a short title and a detailed sentence under 240 total characters with key facts only, in simple words. No extra words. Try to include any relevant direct quotes if available.
+If web search fails, or doesn’t confirm the event, rewrite the given text cleanly in simple words instead and no need to follow output format rules.
 
 CRITICAL FORMAT RULES:
 - Output exactly two lines separated by one blank line.
-- First line: first sentence.
+- First line: a short title.
 - Leave a blank line.
-- Third line: second sentence.
+- Third line: a detailed sentence.
 
 Example of correct output:
 
-France successfully test-fired an M51.3 ballistic missile from a nuclear submarine.
+Catastrophic 7.8 magnitude earthquake hits central Turkey, over 1,500 dead
 
-The missile flew 6,000 km to the Atlantic, reinforcing France's nuclear deterrence capability.
+Rescue teams work early Monday in freezing weather to pull survivors from collapsed buildings as the death toll climbs and thousands remain injured.
 
 Tweet
 
@@ -795,7 +830,6 @@ Tweet
             caption = clean_text(original_text)
         return caption
 
-    # ── ফলব্যাক: সরাসরি অরিজিনাল টেক্সট ──
     print("  ⚠️ DeepSeek failed, posting original tweet text as fallback...")
     return clean_text(original_text)
 
@@ -843,7 +877,7 @@ def type_and_submit(page, text, media_paths):
                 with page.expect_file_chooser(timeout=15000) as fc_info:
                     attach_btn.click()
                 file_chooser = fc_info.value
-                file_chooser.set_files(media_paths)          # একসঙ্গে সব ফাইল
+                file_chooser.set_files(media_paths)
                 print(f"  🎞 {len(media_paths)} media file(s) queued.")
                 has_video = any(mp.lower().endswith('.mp4') for mp in media_paths)
                 if has_video:
@@ -945,7 +979,7 @@ def _weighted_sample_without_replacement(cands, k):
         pool.remove(pick)
     return chosen
 
-def select_shortlist_for_ai(candidates, top_n=10):
+def select_shortlist_for_ai(candidates, top_n=15):   # increased to 15 for more sources
     by_source = {}
     for c in candidates:
         by_source.setdefault(c['source'], []).append(c)
@@ -970,7 +1004,7 @@ def select_shortlist_for_ai(candidates, top_n=10):
     return shortlist
 
 # ──────────────────────────────────────────────
-# POST-ONLY FUNCTION
+# POST-ONLY FUNCTION (with topic memory filter + 280‑char safety)
 # ──────────────────────────────────────────────
 def perform_post_only(page, posted_cache):
     context = page.context
@@ -1000,7 +1034,7 @@ def perform_post_only(page, posted_cache):
                 if not txt or is_duplicate(txt, posted_cache) or is_promotional(txt) or is_too_short(txt) or is_sports_related(txt):
                     continue
                 age = get_tweet_age_minutes(tweet)
-                if age > 360:
+                if age > 240:          # 4-hour cutoff (was 360)
                     continue
                 like_btn = tweet.query_selector('button[data-testid="like"]')
                 likes = parse_count(like_btn.inner_text()) if like_btn else 0
@@ -1018,7 +1052,19 @@ def perform_post_only(page, posted_cache):
         print("\n⚠️ No new posts found.")
         return False
 
-    top_candidates = select_shortlist_for_ai(candidates, top_n=10)
+    # ────── Topic memory filtering (4-hour window, min 3 common keywords) ──────
+    topic_memory = load_topic_memory()
+    filtered_candidates = []
+    for c in candidates:
+        if not is_similar_topic(c["text"], topic_memory, min_overlap=3):
+            filtered_candidates.append(c)
+    if not filtered_candidates:
+        print("\n⚠️ All candidates are on recently posted topics — skipping this round.")
+        return False
+    candidates = filtered_candidates
+    # ──────────────────────────────────────────────────────────────────────────
+
+    top_candidates = select_shortlist_for_ai(candidates, top_n=15)   # pass 15
     best_tweet = ai_select_best_tweet(top_candidates)
     if best_tweet is None:
         best_tweet = max(candidates, key=lambda x: x['score'])
@@ -1087,6 +1133,16 @@ def perform_post_only(page, posted_cache):
 
     print("  🤖 Generating caption...")
     final_caption = build_final_caption(original_text, context=context)
+
+    # ── 280-char safety for free tier ──
+    if len(final_caption) > 280:
+        parts = final_caption.split("\n\n")
+        if len(parts) > 1:
+            final_caption = parts[0].strip()
+            print(f"  ✂️ Caption too long, using first sentence only.")
+        else:
+            final_caption = final_caption[:280].rsplit(".", 1)[0].strip()
+            print(f"  ✂️ Caption too long, truncated to 280 chars.")
     print(f"  ✅ Caption: {final_caption}")
 
     print("\n📤 Posting...")
@@ -1099,6 +1155,7 @@ def perform_post_only(page, posted_cache):
 
     if posted:
         save_to_cache(original_text, POSTED_CACHE)
+        add_to_topic_memory(original_text)
         trim_cache(POSTED_CACHE)
         print("✅ Post successful!")
 
@@ -1112,17 +1169,17 @@ def perform_post_only(page, posted_cache):
         return False
 
 # ──────────────────────────────────────────────
-# HUMAN DELAY FUNCTION
+# HUMAN DELAY FUNCTION (adjusted for 40-48 posts/day)
 # ──────────────────────────────────────────────
 def human_delay(iteration, hour):
     if 6 <= hour < 10:
-        base = random.randint(35, 50) * 60
+        base = random.randint(22, 35) * 60      # ~28 min avg -> ~12.8 posts in 6h
     elif 10 <= hour < 16:
-        base = random.randint(40, 55) * 60
+        base = random.randint(25, 38) * 60      # ~31 min avg -> ~11.6
     elif 16 <= hour < 22:
-        base = random.randint(35, 50) * 60
+        base = random.randint(22, 35) * 60      # ~28 min
     else:
-        base = random.randint(50, 70) * 60
+        base = random.randint(30, 45) * 60      # ~37 min -> ~9.7
     return base
 
 # ──────────────────────────────────────────────
