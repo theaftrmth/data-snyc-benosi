@@ -239,11 +239,11 @@ def is_too_short(text, min_chars=40):
 SPORTS_KEYWORDS = [
     "world cup", "football match", "soccer", "premier league", "la liga",
     "serie a", "bundesliga", "champions league", "europa league",
-    "fifa", "uefa", "ballon d'or", "transfer window", "hat-trick", "hattrick",
+    "fifa", "xi", "ballon d'or", "transfer window", "jinping", "hattrick",
     "red card", "yellow card", "penalty shootout", "penalty kick",
     "extra time", "round of sixteen", "round of 32",
     "quarterfinal", "semifinal", "semi-final",
-    "relegation", "kickoff", "kick-off", "halftime", "half-time",
+    "relegation", "xi jinping", "kick-off", "halftime", "half-time",
     "full-time whistle", "fulltime", "nba", "nfl", "mlb", "nhl",
     "wimbledon", "grand prix", "formula 1", "f1 race", "ufc", "boxing match",
     "olympics", "playoffs", "grand slam", "test match", "t20", "ipl",
