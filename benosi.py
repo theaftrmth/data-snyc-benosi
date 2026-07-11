@@ -53,7 +53,7 @@ def get_daily_limit():
                 return data["target"], data["count"]
         except:
             pass
-    target = random.randint(40, 48)          # new daily target
+    target = random.randint(40, 48)
     data = {"date": today_str, "target": target, "count": 0}
     with open(DAILY_LIMIT_FILE, "w") as f:
         json.dump(data, f)
@@ -239,10 +239,10 @@ def is_too_short(text, min_chars=40):
 SPORTS_KEYWORDS = [
     "world cup", "football match", "soccer", "premier league", "la liga",
     "serie a", "bundesliga", "champions league", "europa league",
-    "fifa", "uefa", "ballon d'or", "transfer window", "hat-trick", "hattrick",
-    "red card", "yellow card", "xi jinping", "penalty shootout", "penalty kick",
-    "extra time", "Xi", "round of sixteen", "round of 32",
-    "quarterfinal", "jinping", "semifinal", "semi-final",
+    "fifa", "xi", "ballon d'or", "jinping", "hat-trick", "hattrick",
+    "red card", "yellow card", "penalty shootout", "penalty kick",
+    "extra time", "xi jinping", "round of 32",
+    "quarterfinal", "semifinal", "semi-final",
     "relegation", "kickoff", "kick-off", "halftime", "half-time",
     "full-time whistle", "fulltime", "nba", "nfl", "mlb", "nhl",
     "wimbledon", "grand prix", "formula 1", "f1 race", "ufc", "boxing match",
@@ -327,17 +327,6 @@ def parse_count(text):
     except:
         return 0
 
-def get_tweet_engagement(tweet):
-    total = 0
-    try:
-        for testid in ["like", "reply", "retweet"]:
-            btn = tweet.query_selector(f'button[data-testid="{testid}"]')
-            if btn:
-                total += parse_count(btn.inner_text())
-    except:
-        pass
-    return total
-
 def get_tweet_view_count(tweet):
     try:
         view_btn = tweet.query_selector('a[href*="/analytics"], [data-testid="analyticsButton"]')
@@ -402,7 +391,7 @@ def load_topic_memory():
         return []
 
 def save_topic_memory(memory):
-    cutoff = time.time() - 4 * 3600
+    cutoff = time.time() - 6 * 3600   # ৬ ঘণ্টা – পুরো রান জুড়ে একই টপিক ব্লক
     memory = [m for m in memory if m["time"] > cutoff]
     with open(TOPIC_MEMORY_FILE, "w") as f:
         json.dump(memory, f)
@@ -454,6 +443,43 @@ def download_media(url, filename):
             return path
     except Exception as e:
         print(f"  ❌ Image download failed: {e}")
+    return None
+
+# ──────────────────────────────────────────────
+# FALLBACK IMAGE (media-less পোস্টের জন্য) — run শুরুতে একবার ডাউনলোড, পুরো ৬ ঘণ্টা reuse
+# ──────────────────────────────────────────────
+def download_fallback_image():
+    url = os.environ.get("FALLBACK_IMAGE_URL")
+    if not url:
+        print("ℹ️  FALLBACK_IMAGE_URL সেট করা নেই — media-less পোস্টে fallback ছবি ব্যবহার হবে না।")
+        return None
+    try:
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+        if r.status_code == 200 and r.content:
+            ext = ".jpg"
+            content_type = r.headers.get("Content-Type", "").lower()
+            if "gif" in content_type:
+                ext = ".gif"
+            elif "png" in content_type:
+                ext = ".png"
+            elif "webp" in content_type:
+                ext = ".webp"
+            elif url.lower().split("?")[0].endswith(".gif"):
+                ext = ".gif"
+
+            if ext == ".gif" and len(r.content) > 15 * 1024 * 1024:
+                print(f"⚠️  Fallback GIF {len(r.content) / 1024 / 1024:.1f}MB — X-এর ~15MB লিমিট ছাড়িয়ে গেছে, ব্যবহার হবে না।")
+                return None
+
+            path = os.path.join(MEDIA_DIR, f"fallback_image{ext}")
+            with open(path, "wb") as f:
+                f.write(r.content)
+            print(f"✅ Fallback image downloaded: {path} ({len(r.content)} bytes)")
+            return path
+        else:
+            print(f"⚠️  Fallback image download failed: HTTP {r.status_code}")
+    except Exception as e:
+        print(f"⚠️  Fallback image download failed: {e}")
     return None
 
 def download_videos_from_tweet(tweet_url, max_attempts=3):
@@ -578,6 +604,19 @@ def find_matching_tweet_index(page, target_text, search_range=10):
 # ──────────────────────────────────────────────
 # DEEPSEEK REWRITE (caption generation)
 # ──────────────────────────────────────────────
+def _deepseek_select_expert_mode(page) -> None:
+    try:
+        expert_radio = page.query_selector('div[data-model-type="expert"][role="radio"]')
+        if expert_radio:
+            checked = expert_radio.get_attribute("aria-checked")
+            if checked != "true":
+                expert_radio.click()
+                page.wait_for_timeout(random.uniform(500, 800))
+        else:
+            print("  ⚠️  DeepSeek Expert radio option খুঁজে পাওয়া যায়নি।")
+    except Exception as e:
+        print(f"  ⚠️  DeepSeek Expert mode selection error: {e}")
+
 def _deepseek_ensure_toggle_on(page, label_text: str) -> None:
     try:
         toggles = page.query_selector_all("div[aria-pressed]")
@@ -622,6 +661,8 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
         page.goto("https://chat.deepseek.com/", wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(3000)
 
+        _deepseek_select_expert_mode(page)
+
         textarea = None
         for sel in [
             'textarea[name="search"]',
@@ -642,7 +683,6 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
             return None
 
         _deepseek_ensure_toggle_on(page, "DeepThink")
-        _deepseek_ensure_toggle_on(page, "Search")
 
         textarea.click()
         page.wait_for_timeout(500)
@@ -668,7 +708,7 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
         if not sent:
             page.keyboard.press("Enter")
 
-        print("  ⏳ Waiting for DeepSeek response (DeepThink + Search, ~90s)...")
+        print("  ⏳ Waiting for DeepSeek response (Expert mode + DeepThink, ~90s)...")
         page.wait_for_timeout(90000)
 
         response_text = ""
@@ -792,24 +832,16 @@ Example: 2"""
 # CAPTION GENERATION (DeepSeek, updated prompt)
 # ──────────────────────────────────────────────
 def build_final_caption(original_text, context=None):
-    prompt = f"""IMPORTANT: All output must be in simple words.
+    prompt = f"""You run an alternative news aggregator twitter account
 
-Think step by step: Internally create 3 distinct drafts, each with a short title and a detailed sentence under 240 total characters with key facts, in simple words. Then critically compare them—check for conciseness, factual accuracy, and strict character limit. Select the best one or merge the strongest parts into a single final version. After that, output only the final two lines in the format below, with no extra text.
-
-Search web, rewrite this into a short title and a detailed sentence under 240 total characters with key facts only, in simple words. No extra words. Try to include any relevant direct quotes if available.
-If web search fails, or doesn’t confirm the event, rewrite the given text cleanly in simple words instead and no need to follow output format rules.
+Casually rewrite this sentence in simple words within 280 characters. 
+No Emoji.
+If a quote is present and it adds value, feel free to include the most important part of it.
 
 CRITICAL FORMAT RULES:
-- Output exactly two lines separated by one blank line.
-- First line: a short title.
-- Leave a blank line.
-- Third line: a detailed sentence.
+- Use as many sentences as the content naturally needs (1, 2, or 3).
+- Separate each sentence with exactly one blank line.
 
-Example of correct output:
-
-Catastrophic 7.8 magnitude earthquake hits central Turkey, over 1,500 dead
-
-Rescue teams work early Monday in freezing weather to pull survivors from collapsed buildings as the death toll climbs and thousands remain injured.
 
 Tweet
 
@@ -879,8 +911,9 @@ def type_and_submit(page, text, media_paths):
                 file_chooser = fc_info.value
                 file_chooser.set_files(media_paths)
                 print(f"  🎞 {len(media_paths)} media file(s) queued.")
-                has_video = any(mp.lower().endswith('.mp4') for mp in media_paths)
-                if has_video:
+                is_video = any(mp.lower().endswith('.mp4') for mp in media_paths)
+                is_gif = any(mp.lower().endswith('.gif') for mp in media_paths)
+                if is_video:
                     page.wait_for_timeout(3000)
                     try:
                         page.wait_for_selector('div[data-testid="attachments"]', timeout=30000)
@@ -894,6 +927,14 @@ def type_and_submit(page, text, media_paths):
                         print("  ✅ Video preview confirmed.")
                     except:
                         print("  ⚠️ Preview not confirmed, continuing anyway.")
+                elif is_gif:
+                    try:
+                        page.wait_for_selector('div[data-testid="attachments"]', timeout=15000)
+                        print("  ✅ Attachment container found (GIF).")
+                    except:
+                        print("  ⚠️ Attachment container not found.")
+                        page.screenshot(path=f"attach_fail_{int(time.time())}.png")
+                    page.wait_for_timeout(random.randint(2500, 4000))
                 else:
                     page.wait_for_timeout(random.randint(3000, 5000))
             except Exception as e:
@@ -1004,9 +1045,9 @@ def select_shortlist_for_ai(candidates, top_n=15):   # increased to 15 for more 
     return shortlist
 
 # ──────────────────────────────────────────────
-# POST-ONLY FUNCTION (with topic memory filter + 280‑char safety)
+# POST-ONLY FUNCTION (with topic memory filter + 280‑char safety + fallback image)
 # ──────────────────────────────────────────────
-def perform_post_only(page, posted_cache):
+def perform_post_only(page, posted_cache, fallback_image_path=None):
     context = page.context
     candidates = []
 
@@ -1034,7 +1075,7 @@ def perform_post_only(page, posted_cache):
                 if not txt or is_duplicate(txt, posted_cache) or is_promotional(txt) or is_too_short(txt) or is_sports_related(txt):
                     continue
                 age = get_tweet_age_minutes(tweet)
-                if age > 240:          # 4-hour cutoff (was 360)
+                if age > 240:          # 4-hour cutoff
                     continue
                 like_btn = tweet.query_selector('button[data-testid="like"]')
                 likes = parse_count(like_btn.inner_text()) if like_btn else 0
@@ -1052,7 +1093,7 @@ def perform_post_only(page, posted_cache):
         print("\n⚠️ No new posts found.")
         return False
 
-    # ────── Topic memory filtering (4-hour window, min 3 common keywords) ──────
+    # ────── Topic memory filtering (6-hour window, min 3 common keywords) ──────
     topic_memory = load_topic_memory()
     filtered_candidates = []
     for c in candidates:
@@ -1131,6 +1172,11 @@ def perform_post_only(page, posted_cache):
 
         print(f"  🎥 Video: {has_video}, 🖼 Media: {len(media_paths) if isinstance(media_paths, list) else 0} files")
 
+    # ── কোনো নেটিভ মিডিয়া না পাওয়া গেলে fallback ছবি ব্যবহার (run-এর জন্য একবার ডাউনলোড করা কপি) ──
+    if not media_paths and fallback_image_path and os.path.exists(fallback_image_path):
+        print("  🖼️ No native media found — using fallback image.")
+        media_paths = [fallback_image_path]
+
     print("  🤖 Generating caption...")
     final_caption = build_final_caption(original_text, context=context)
 
@@ -1148,6 +1194,8 @@ def perform_post_only(page, posted_cache):
     print("\n📤 Posting...")
     posted = open_compose_and_post(page, final_caption, media_paths)
     for path in media_paths:
+        if path == fallback_image_path:
+            continue  # fallback ছবিটা পুরো run জুড়ে reuse হবে, এখানে ডিলিট করা যাবে না
         try:
             os.remove(path)
         except:
@@ -1259,6 +1307,9 @@ def run_bot_loop():
             );
         """)
 
+        # ── run শুরুতে একবারই fallback ছবি ডাউনলোড, পুরো ৬ ঘণ্টা reuse হবে ──
+        fallback_image_path = download_fallback_image()
+
         print(f"\n🤖 News Bot started (Post-Only Mode) — {datetime.now(BD_TZ).strftime('%Y-%m-%d %H:%M:%S')} (BD time)")
         iteration = 0
         SIESTA_EVERY = 1000
@@ -1290,7 +1341,7 @@ def run_bot_loop():
 
             posted_cache = load_cache(POSTED_CACHE)
 
-            success = perform_post_only(page, posted_cache)
+            success = perform_post_only(page, posted_cache, fallback_image_path)
             if not success:
                 print("⚠️ Post failed, continuing after delay.", flush=True)
 
