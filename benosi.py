@@ -239,9 +239,9 @@ def is_too_short(text, min_chars=40):
 SPORTS_KEYWORDS = [
     "world cup", "football match", "soccer", "premier league", "la liga",
     "serie a", "bundesliga", "champions league", "europa league",
-    "fifa", "xi", "ballon d'or", "jinping", "hat-trick", "hattrick",
+    "fifa", "uefa", "ballon d'or", "transfer window", "hat-trick", "hattrick",
     "red card", "yellow card", "penalty shootout", "penalty kick",
-    "extra time", "xi jinping", "round of 32",
+    "extra time", "round of sixteen", "round of 32",
     "quarterfinal", "semifinal", "semi-final",
     "relegation", "kickoff", "kick-off", "halftime", "half-time",
     "full-time whistle", "fulltime", "nba", "nfl", "mlb", "nhl",
@@ -391,7 +391,7 @@ def load_topic_memory():
         return []
 
 def save_topic_memory(memory):
-    cutoff = time.time() - 6 * 3600   # ৬ ঘণ্টা – পুরো রান জুড়ে একই টপিক ব্লক
+    cutoff = time.time() - 6 * 3600   # ৬ ঘণ্টা – পুরো রান জুড়ে একই টপিক ব্লক
     memory = [m for m in memory if m["time"] > cutoff]
     with open(TOPIC_MEMORY_FILE, "w") as f:
         json.dump(memory, f)
@@ -649,6 +649,21 @@ def _deepseek_is_focused(page, el) -> bool:
     except Exception:
         return False
 
+def _deepseek_find_textarea(page, timeout=8000):
+    for sel in [
+        'textarea[name="search"]',
+        'textarea[placeholder="Message DeepSeek"]',
+        'textarea.ds-scroll-area',
+        'textarea',
+    ]:
+        try:
+            el = page.wait_for_selector(sel, timeout=timeout)
+            if el and el.is_visible():
+                return el
+        except:
+            continue
+    return None
+
 def deepseek_rewrite(context, prompt: str) -> str | None:
     ds_session = load_deepseek_session()
     if not ds_session:
@@ -662,27 +677,16 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
         page.wait_for_timeout(3000)
 
         _deepseek_select_expert_mode(page)
+        # DeepThink টগলও textarea-র handle নেওয়ার আগেই সেরে ফেলা হচ্ছে —
+        # মোড/টগল ক্লিক কম্পোজ-এরিয়া re-render করতে পারে, যার ফলে আগে নেওয়া
+        # handle stale হয়ে যেতে পারত (fill() তখন সাইলেন্টলি খালি বক্সে গিয়ে পড়তো)
+        _deepseek_ensure_toggle_on(page, "DeepThink")
 
-        textarea = None
-        for sel in [
-            'textarea[name="search"]',
-            'textarea[placeholder="Message DeepSeek"]',
-            'textarea.ds-scroll-area',
-            'textarea',
-        ]:
-            try:
-                el = page.wait_for_selector(sel, timeout=8000)
-                if el and el.is_visible():
-                    textarea = el
-                    break
-            except:
-                continue
+        textarea = _deepseek_find_textarea(page)
         if not textarea:
             print("  ❌ DeepSeek textarea not found.")
             page.screenshot(path=f"deepseek_debug_{int(time.time())}.png")
             return None
-
-        _deepseek_ensure_toggle_on(page, "DeepThink")
 
         textarea.click()
         page.wait_for_timeout(500)
@@ -694,6 +698,29 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
 
         textarea.fill(prompt)
         page.wait_for_timeout(random.uniform(500, 800))
+
+        # ── fill() আসলে টেক্সট বসিয়েছে কিনা read-back করে ভেরিফাই করা হচ্ছে —
+        # stale handle বা অন্য কোনো কারণে বক্স খালি থেকে গেলে একবার নতুন করে
+        # textarea খুঁজে রিট্রাই করা হয়, তাও ব্যর্থ হলে খালি বক্সে সাবমিট না করেই থামা
+        try:
+            current_value = textarea.input_value()
+        except Exception:
+            current_value = ""
+        if not current_value.strip():
+            print("  ⚠️  DeepSeek: fill()-এর পর বক্স খালি (stale handle সন্দেহ), textarea নতুন করে খুঁজে রিট্রাই করছি...")
+            textarea = _deepseek_find_textarea(page, timeout=5000)
+            if textarea:
+                textarea.click()
+                page.wait_for_timeout(500)
+                textarea.fill(prompt)
+                page.wait_for_timeout(random.uniform(500, 800))
+                try:
+                    current_value = textarea.input_value()
+                except Exception:
+                    current_value = ""
+            if not textarea or not current_value.strip():
+                print("  ❌ DeepSeek: রিট্রাইতেও বক্স খালি — প্রম্পট সাবমিট না করেই থামছে।")
+                return None
 
         sent = False
         try:
