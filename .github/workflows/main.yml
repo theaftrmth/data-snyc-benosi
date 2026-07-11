@@ -54,6 +54,7 @@ jobs:
           SESSION_JSON: ${{ secrets.SESSION_JSON }}
           DEEPSEEK_SESSION_JSON: ${{ secrets.DEEPSEEK_SESSION_JSON }}
           SOURCES: ${{ secrets.SOURCES }}
+          FALLBACK_IMAGE_URL: ${{ secrets.FALLBACK_IMAGE_URL }}
           HEADLESS: false
           PYTHONUNBUFFERED: 1
         run: xvfb-run python benosi.py
