@@ -32,6 +32,11 @@ PROMO_KEYWORDS = [
     "coupon", "affiliate", "sponsored", "ad:", "promotion",
 ]
 
+# ── কেবল জিওপলিটিক্যাল কনটেন্টে অপ্রাসঙ্গিক কয়েকটি স্পোর্টস-টপিক ব্লক করা হচ্ছে
+FORBIDDEN_KEYWORDS = [
+    "world cup", "champions league", "premier league", "nfl", "nba"
+]
+
 MEDIA_DIR = "downloaded_media"
 POSTED_CACHE = "posted_cache.txt"
 REPLIED_CACHE = "replied_cache.txt"
@@ -116,7 +121,6 @@ def load_deepseek_session():
     return None
 
 def apply_deepseek_cookies(context):
-    """একই browser context-এ DeepSeek-এর কুকি ইনজেক্ট করে (X সেশনের পাশাপাশি)।"""
     ds_session = load_deepseek_session()
     if ds_session and "cookies" in ds_session:
         try:
@@ -236,22 +240,9 @@ def is_promotional(text):
 def is_too_short(text, min_chars=40):
     return len(text.strip()) < min_chars
 
-SPORTS_KEYWORDS = [
-    "world cup", "football match", "soccer", "premier league", "la liga",
-    "serie a", "bundesliga", "champions league", "europa league",
-    "fifa", "xi", "ballon d'or", "transfer window", "jinping", "hattrick",
-    "red card", "yellow card", "penalty shootout", "penalty kick",
-    "extra time", "round of sixteen", "round of 32",
-    "quarterfinal", "semifinal", "semi-final",
-    "relegation", "xi jinping", "kick-off", "halftime", "half-time",
-    "full-time whistle", "fulltime", "nba", "nfl", "mlb", "nhl",
-    "wimbledon", "grand prix", "formula 1", "f1 race", "ufc", "boxing match",
-    "olympics", "playoffs", "grand slam", "test match", "t20", "ipl",
-    "manager sacked", "transfer fee", "world cup qualifier",
-]
-
-def is_sports_related(text):
-    return any(kw in text.lower() for kw in SPORTS_KEYWORDS)
+def is_forbidden_topic(text):
+    """FORBIDDEN_KEYWORDS-এ উল্লেখিত শব্দগুলো থাকলে টুইট পোস্ট হবে না।"""
+    return any(kw in text.lower() for kw in FORBIDDEN_KEYWORDS)
 
 def is_pinned_tweet(tweet_element):
     try:
@@ -446,7 +437,7 @@ def download_media(url, filename):
     return None
 
 # ──────────────────────────────────────────────
-# FALLBACK IMAGE (media-less পোস্টের জন্য) — run শুরুতে একবার ডাউনলোড, পুরো ৬ ঘণ্টা reuse
+# FALLBACK IMAGE (media-less পোস্টের জন্য)
 # ──────────────────────────────────────────────
 def download_fallback_image():
     url = os.environ.get("FALLBACK_IMAGE_URL")
@@ -541,7 +532,6 @@ def download_videos_from_tweet(tweet_url, max_attempts=3):
 def extract_media_urls_safely(page, tweet_index):
     media_paths = []
     try:
-        # ---------- ১. ভিডিও ডাউনলোড ----------
         has_vid = check_video_in_article(page, tweet_index)
         if has_vid:
             tweet_url = get_tweet_url_from_article(page, tweet_index)
@@ -555,7 +545,6 @@ def extract_media_urls_safely(page, tweet_index):
             else:
                 print("  ⚠️ Tweet URL not found, skipping video download.")
 
-        # ---------- ২. ছবি ডাউনলোড ----------
         urls = page.evaluate(f"""() => {{
             const a = document.querySelectorAll('article[data-testid="tweet"]')[{tweet_index}];
             if (!a) return [];
@@ -570,7 +559,6 @@ def extract_media_urls_safely(page, tweet_index):
                 media_paths.append(path)
                 print(f"  📥 Image {i+1} downloaded.")
 
-        # ---------- ৩. সেফটি ট্রিম (টুইটারের সর্বোচ্চ ৪টি মিডিয়া) ----------
         if len(media_paths) > 4:
             print(f"  ⚠️ Combined media count {len(media_paths)} exceeds 4, trimming to first 4.")
             for extra in media_paths[4:]:
@@ -677,9 +665,6 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
         page.wait_for_timeout(3000)
 
         _deepseek_select_expert_mode(page)
-        # DeepThink টগলও textarea-র handle নেওয়ার আগেই সেরে ফেলা হচ্ছে —
-        # মোড/টগল ক্লিক কম্পোজ-এরিয়া re-render করতে পারে, যার ফলে আগে নেওয়া
-        # handle stale হয়ে যেতে পারত (fill() তখন সাইলেন্টলি খালি বক্সে গিয়ে পড়তো)
         _deepseek_ensure_toggle_on(page, "DeepThink")
 
         textarea = _deepseek_find_textarea(page)
@@ -699,9 +684,6 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
         textarea.fill(prompt)
         page.wait_for_timeout(random.uniform(500, 800))
 
-        # ── fill() আসলে টেক্সট বসিয়েছে কিনা read-back করে ভেরিফাই করা হচ্ছে —
-        # stale handle বা অন্য কোনো কারণে বক্স খালি থেকে গেলে একবার নতুন করে
-        # textarea খুঁজে রিট্রাই করা হয়, তাও ব্যর্থ হলে খালি বক্সে সাবমিট না করেই থামা
         try:
             current_value = textarea.input_value()
         except Exception:
@@ -856,7 +838,7 @@ Example: 2"""
     return None
 
 # ──────────────────────────────────────────────
-# CAPTION GENERATION (DeepSeek, updated prompt)
+# CAPTION GENERATION (DeepSeek, full output as caption)
 # ──────────────────────────────────────────────
 def build_final_caption(original_text, context=None):
     prompt = f"""You run an alternative news aggregator twitter account
@@ -880,13 +862,8 @@ Tweet
         result = None
 
     if result:
-        parts = [p.strip() for p in re.split(r'\n\s*\n', result) if p.strip()]
-        if len(parts) >= 2:
-            caption = f"{parts[-2]}\n\n{parts[-1]}"
-        elif len(parts) == 1:
-            caption = parts[0]
-        else:
-            caption = clean_text(original_text)
+        caption = result.strip()
+        caption = re.sub(r'\n{3,}', '\n\n', caption)
         return caption
 
     print("  ⚠️ DeepSeek failed, posting original tweet text as fallback...")
@@ -1047,7 +1024,7 @@ def _weighted_sample_without_replacement(cands, k):
         pool.remove(pick)
     return chosen
 
-def select_shortlist_for_ai(candidates, top_n=15):   # increased to 15 for more sources
+def select_shortlist_for_ai(candidates, top_n=15):
     by_source = {}
     for c in candidates:
         by_source.setdefault(c['source'], []).append(c)
@@ -1099,10 +1076,10 @@ def perform_post_only(page, posted_cache, fallback_image_path=None):
                     continue
                 text_el = tweet.query_selector('div[data-testid="tweetText"]')
                 txt = text_el.inner_text() if text_el else ""
-                if not txt or is_duplicate(txt, posted_cache) or is_promotional(txt) or is_too_short(txt) or is_sports_related(txt):
+                if not txt or is_duplicate(txt, posted_cache) or is_promotional(txt) or is_too_short(txt) or is_forbidden_topic(txt):
                     continue
                 age = get_tweet_age_minutes(tweet)
-                if age > 240:          # 4-hour cutoff
+                if age > 240:
                     continue
                 like_btn = tweet.query_selector('button[data-testid="like"]')
                 likes = parse_count(like_btn.inner_text()) if like_btn else 0
@@ -1120,7 +1097,6 @@ def perform_post_only(page, posted_cache, fallback_image_path=None):
         print("\n⚠️ No new posts found.")
         return False
 
-    # ────── Topic memory filtering (6-hour window, min 3 common keywords) ──────
     topic_memory = load_topic_memory()
     filtered_candidates = []
     for c in candidates:
@@ -1130,9 +1106,8 @@ def perform_post_only(page, posted_cache, fallback_image_path=None):
         print("\n⚠️ All candidates are on recently posted topics — skipping this round.")
         return False
     candidates = filtered_candidates
-    # ──────────────────────────────────────────────────────────────────────────
 
-    top_candidates = select_shortlist_for_ai(candidates, top_n=15)   # pass 15
+    top_candidates = select_shortlist_for_ai(candidates, top_n=15)
     best_tweet = ai_select_best_tweet(top_candidates)
     if best_tweet is None:
         best_tweet = max(candidates, key=lambda x: x['score'])
@@ -1199,7 +1174,6 @@ def perform_post_only(page, posted_cache, fallback_image_path=None):
 
         print(f"  🎥 Video: {has_video}, 🖼 Media: {len(media_paths) if isinstance(media_paths, list) else 0} files")
 
-    # ── কোনো নেটিভ মিডিয়া না পাওয়া গেলে fallback ছবি ব্যবহার (run-এর জন্য একবার ডাউনলোড করা কপি) ──
     if not media_paths and fallback_image_path and os.path.exists(fallback_image_path):
         print("  🖼️ No native media found — using fallback image.")
         media_paths = [fallback_image_path]
@@ -1207,7 +1181,6 @@ def perform_post_only(page, posted_cache, fallback_image_path=None):
     print("  🤖 Generating caption...")
     final_caption = build_final_caption(original_text, context=context)
 
-    # ── 280-char safety for free tier ──
     if len(final_caption) > 280:
         parts = final_caption.split("\n\n")
         if len(parts) > 1:
@@ -1222,7 +1195,7 @@ def perform_post_only(page, posted_cache, fallback_image_path=None):
     posted = open_compose_and_post(page, final_caption, media_paths)
     for path in media_paths:
         if path == fallback_image_path:
-            continue  # fallback ছবিটা পুরো run জুড়ে reuse হবে, এখানে ডিলিট করা যাবে না
+            continue
         try:
             os.remove(path)
         except:
@@ -1248,13 +1221,13 @@ def perform_post_only(page, posted_cache, fallback_image_path=None):
 # ──────────────────────────────────────────────
 def human_delay(iteration, hour):
     if 6 <= hour < 10:
-        base = random.randint(22, 35) * 60      # ~28 min avg -> ~12.8 posts in 6h
+        base = random.randint(22, 35) * 60
     elif 10 <= hour < 16:
-        base = random.randint(25, 38) * 60      # ~31 min avg -> ~11.6
+        base = random.randint(25, 38) * 60
     elif 16 <= hour < 22:
-        base = random.randint(22, 35) * 60      # ~28 min
+        base = random.randint(22, 35) * 60
     else:
-        base = random.randint(30, 45) * 60      # ~37 min -> ~9.7
+        base = random.randint(30, 45) * 60
     return base
 
 # ──────────────────────────────────────────────
@@ -1334,7 +1307,6 @@ def run_bot_loop():
             );
         """)
 
-        # ── run শুরুতে একবারই fallback ছবি ডাউনলোড, পুরো ৬ ঘণ্টা reuse হবে ──
         fallback_image_path = download_fallback_image()
 
         print(f"\n🤖 News Bot started (Post-Only Mode) — {datetime.now(BD_TZ).strftime('%Y-%m-%d %H:%M:%S')} (BD time)")
