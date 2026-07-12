@@ -34,7 +34,7 @@ PROMO_KEYWORDS = [
 
 # ── কেবল জিওপলিটিক্যাল কনটেন্টে অপ্রাসঙ্গিক কয়েকটি স্পোর্টস-টপিক ব্লক করা হচ্ছে
 FORBIDDEN_KEYWORDS = [
-    "world cup", "champions league", "premier league", "nfl", "nba"
+    "Xi", "Jinping", "Xi Jinping", "Taiwan", "India"
 ]
 
 MEDIA_DIR = "downloaded_media"
@@ -362,7 +362,7 @@ STOPWORDS = {
     "this", "was", "are", "were", "been", "be", "have", "has", "had",
     "do", "does", "did", "will", "would", "could", "should", "may",
     "can", "said", "says", "new", "just", "now", "very", "also",
-    "more", "some", "BREAKING", "Iran", "US", "USA", "next", "back",
+    "more", "some", "BREAKING", "Iran", "US", "USA", "U.S.", "back",
     "still", "already", "yet", "all", "both", "each", "every", "other",
     "many", "much", "such", "only", "then", "than", "too", "here",
     "there", "when", "where", "why", "how"
