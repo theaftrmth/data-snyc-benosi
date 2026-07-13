@@ -34,7 +34,7 @@ PROMO_KEYWORDS = [
 
 # ── কেবল জিওপলিটিক্যাল কনটেন্টে অপ্রাসঙ্গিক কয়েকটি স্পোর্টস-টপিক ব্লক করা হচ্ছে
 FORBIDDEN_KEYWORDS = [
-    "xi", "jinping", "xi jinping", "taiwan", "india"
+    "xi", "xi jinping", "jinping", "taiwan", "india"
 ]
 
 MEDIA_DIR = "downloaded_media"
@@ -121,6 +121,7 @@ def load_deepseek_session():
     return None
 
 def apply_deepseek_cookies(context):
+    """একই browser context-এ DeepSeek-এর কুকি ইনজেক্ট করে (X সেশনের পাশাপাশি)।"""
     ds_session = load_deepseek_session()
     if ds_session and "cookies" in ds_session:
         try:
@@ -437,7 +438,7 @@ def download_media(url, filename):
     return None
 
 # ──────────────────────────────────────────────
-# FALLBACK IMAGE (media-less পোস্টের জন্য)
+# FALLBACK IMAGE (media-less পোস্টের জন্য) — run শুরুতে একবার ডাউনলোড, পুরো ৬ ঘণ্টা reuse
 # ──────────────────────────────────────────────
 def download_fallback_image():
     url = os.environ.get("FALLBACK_IMAGE_URL")
@@ -532,6 +533,7 @@ def download_videos_from_tweet(tweet_url, max_attempts=3):
 def extract_media_urls_safely(page, tweet_index):
     media_paths = []
     try:
+        # ---------- ১. ভিডিও ডাউনলোড ----------
         has_vid = check_video_in_article(page, tweet_index)
         if has_vid:
             tweet_url = get_tweet_url_from_article(page, tweet_index)
@@ -545,6 +547,7 @@ def extract_media_urls_safely(page, tweet_index):
             else:
                 print("  ⚠️ Tweet URL not found, skipping video download.")
 
+        # ---------- ২. ছবি ডাউনলোড ----------
         urls = page.evaluate(f"""() => {{
             const a = document.querySelectorAll('article[data-testid="tweet"]')[{tweet_index}];
             if (!a) return [];
@@ -559,6 +562,7 @@ def extract_media_urls_safely(page, tweet_index):
                 media_paths.append(path)
                 print(f"  📥 Image {i+1} downloaded.")
 
+        # ---------- ৩. সেফটি ট্রিম (টুইটারের সর্বোচ্চ ৪টি মিডিয়া) ----------
         if len(media_paths) > 4:
             print(f"  ⚠️ Combined media count {len(media_paths)} exceeds 4, trimming to first 4.")
             for extra in media_paths[4:]:
@@ -821,7 +825,7 @@ Consider:
 - High public interest and potential engagement.
 - No reaction tweets.
 
-STRICT EXCLUSION: Do NOT select any sports-related tweet.
+STRICT EXCLUSION: Do NOT select any chinese political tweet.
 
 Tweets:
 {json.dumps(shortlist, indent=2, ensure_ascii=False)}
@@ -838,14 +842,15 @@ Example: 2"""
     return None
 
 # ──────────────────────────────────────────────
-# CAPTION GENERATION (DeepSeek, full output as caption)
+# CAPTION GENERATION (DeepSeek, new prompt)
 # ──────────────────────────────────────────────
 def build_final_caption(original_text, context=None):
-    prompt = f"""You run an alternative news aggregator twitter account
-
-Casually rewrite this sentence in simple words within 280 characters. 
+    prompt = f"""Paraphrase this Tweet in simple easy to understand words within 280 characters. 
+In English.
 No Emoji.
-If a quote is present and it adds value, feel free to include the most important part of it.
+If any quote is present, feel free to include the most important part of it with quote marks (" ")
+
+DO NOT GIVE INCOMPLETE INFORMATIONS.
 
 CRITICAL FORMAT RULES:
 - Use as many sentences as the content naturally needs (1, 2, or 3).
@@ -863,7 +868,7 @@ Tweet
 
     if result:
         caption = result.strip()
-        caption = re.sub(r'\n{3,}', '\n\n', caption)
+        caption = re.sub(r'\n{3,}', '\n\n', caption)   # ফাঁকা লাইন ঠিক রাখি
         return caption
 
     print("  ⚠️ DeepSeek failed, posting original tweet text as fallback...")
@@ -1024,7 +1029,7 @@ def _weighted_sample_without_replacement(cands, k):
         pool.remove(pick)
     return chosen
 
-def select_shortlist_for_ai(candidates, top_n=15):
+def select_shortlist_for_ai(candidates, top_n=15):   # increased to 15 for more sources
     by_source = {}
     for c in candidates:
         by_source.setdefault(c['source'], []).append(c)
@@ -1079,7 +1084,7 @@ def perform_post_only(page, posted_cache, fallback_image_path=None):
                 if not txt or is_duplicate(txt, posted_cache) or is_promotional(txt) or is_too_short(txt) or is_forbidden_topic(txt):
                     continue
                 age = get_tweet_age_minutes(tweet)
-                if age > 240:
+                if age > 240:          # 4-hour cutoff
                     continue
                 like_btn = tweet.query_selector('button[data-testid="like"]')
                 likes = parse_count(like_btn.inner_text()) if like_btn else 0
@@ -1097,6 +1102,7 @@ def perform_post_only(page, posted_cache, fallback_image_path=None):
         print("\n⚠️ No new posts found.")
         return False
 
+    # ────── Topic memory filtering (6-hour window, min 3 common keywords) ──────
     topic_memory = load_topic_memory()
     filtered_candidates = []
     for c in candidates:
@@ -1106,8 +1112,9 @@ def perform_post_only(page, posted_cache, fallback_image_path=None):
         print("\n⚠️ All candidates are on recently posted topics — skipping this round.")
         return False
     candidates = filtered_candidates
+    # ──────────────────────────────────────────────────────────────────────────
 
-    top_candidates = select_shortlist_for_ai(candidates, top_n=15)
+    top_candidates = select_shortlist_for_ai(candidates, top_n=15)   # pass 15
     best_tweet = ai_select_best_tweet(top_candidates)
     if best_tweet is None:
         best_tweet = max(candidates, key=lambda x: x['score'])
@@ -1174,6 +1181,7 @@ def perform_post_only(page, posted_cache, fallback_image_path=None):
 
         print(f"  🎥 Video: {has_video}, 🖼 Media: {len(media_paths) if isinstance(media_paths, list) else 0} files")
 
+    # ── কোনো নেটিভ মিডিয়া না পাওয়া গেলে fallback ছবি ব্যবহার (run-এর জন্য একবার ডাউনলোড করা কপি) ──
     if not media_paths and fallback_image_path and os.path.exists(fallback_image_path):
         print("  🖼️ No native media found — using fallback image.")
         media_paths = [fallback_image_path]
@@ -1181,6 +1189,7 @@ def perform_post_only(page, posted_cache, fallback_image_path=None):
     print("  🤖 Generating caption...")
     final_caption = build_final_caption(original_text, context=context)
 
+    # ── 280-char safety for free tier ──
     if len(final_caption) > 280:
         parts = final_caption.split("\n\n")
         if len(parts) > 1:
@@ -1195,7 +1204,7 @@ def perform_post_only(page, posted_cache, fallback_image_path=None):
     posted = open_compose_and_post(page, final_caption, media_paths)
     for path in media_paths:
         if path == fallback_image_path:
-            continue
+            continue  # fallback ছবিটা পুরো run জুড়ে reuse হবে, এখানে ডিলিট করা যাবে না
         try:
             os.remove(path)
         except:
@@ -1221,13 +1230,13 @@ def perform_post_only(page, posted_cache, fallback_image_path=None):
 # ──────────────────────────────────────────────
 def human_delay(iteration, hour):
     if 6 <= hour < 10:
-        base = random.randint(22, 35) * 60
+        base = random.randint(22, 35) * 60      # ~28 min avg -> ~12.8 posts in 6h
     elif 10 <= hour < 16:
-        base = random.randint(25, 38) * 60
+        base = random.randint(25, 38) * 60      # ~31 min avg -> ~11.6
     elif 16 <= hour < 22:
-        base = random.randint(22, 35) * 60
+        base = random.randint(22, 35) * 60      # ~28 min
     else:
-        base = random.randint(30, 45) * 60
+        base = random.randint(30, 45) * 60      # ~37 min -> ~9.7
     return base
 
 # ──────────────────────────────────────────────
@@ -1307,6 +1316,7 @@ def run_bot_loop():
             );
         """)
 
+        # ── run শুরুতে একবারই fallback ছবি ডাউনলোড, পুরো ৬ ঘণ্টা reuse হবে ──
         fallback_image_path = download_fallback_image()
 
         print(f"\n🤖 News Bot started (Post-Only Mode) — {datetime.now(BD_TZ).strftime('%Y-%m-%d %H:%M:%S')} (BD time)")
