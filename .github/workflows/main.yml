@@ -46,6 +46,7 @@ jobs:
             captcha_lock.txt
             daily_post_limit.json
             topic_memory.json
+            session_state.json
           key: bot-cache-${{ github.run_id }}
           restore-keys: |
             bot-cache-
@@ -70,6 +71,7 @@ jobs:
             captcha_lock.txt
             daily_post_limit.json
             topic_memory.json
+            session_state.json
           key: bot-cache-${{ github.run_id }}
 
       - name: Upload captcha debug screenshots
