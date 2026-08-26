@@ -84,8 +84,8 @@ def _fix_samesite(v):
             "no_restriction": "None"}.get(str(v).lower())
 
 def normalize_cookies(raw):
-    """Cookie-Editor এক্সপোর্ট (খালি list) আর Playwright storage_state (dict) —
-    দুটো ফরম্যাটই Playwright-সেফ কুকি লিস্টে কনভার্ট করে।"""
+    """Cookie-Editor এক্সপোর্ট (খালি list) আর storage_state (dict) — দুটোই
+    Playwright-সেফ কুকি লিস্টে কনভার্ট করে।"""
     cookies = raw.get("cookies", []) if isinstance(raw, dict) else raw
     out = []
     for c in cookies:
@@ -106,9 +106,8 @@ def normalize_cookies(raw):
     return out
 
 def load_session():
-    # ১. আগে ক্যাশড session_state.json (আগের রানে Playwright নিজে যে state সেভ
-    #    করেছিল — cookies/tokens আপডেটেড)। এটা Playwright-এর নেটিভ storage_state
-    #    ফরম্যাট, তাই normalize_cookies() লাগে না।
+    # ১. আগে ক্যাশড session_state.json (আগের রানের আপডেটেড state) — নেটিভ ফরম্যাট,
+    #    normalize লাগে না। ২. না থাকলে Secret/session.json normalize করে।
     if os.path.exists(SESSION_CACHE_FILE):
         try:
             with open(SESSION_CACHE_FILE, "r", encoding="utf-8") as f:
@@ -118,8 +117,6 @@ def load_session():
                 return cached
         except Exception as e:
             print(f"⚠️ ক্যাশড সেশন পড়তে সমস্যা, Secret-এ fallback: {e}")
-    # ২. fallback: GitHub Secret (SESSION_JSON) — Cookie-Editor এক্সপোর্ট সরাসরি
-    #    বসালেই normalize_cookies() কনভার্ট করে নেবে; ম্যানুয়াল কনভার্সন লাগবে না।
     session_json_str = os.environ.get("SESSION_JSON")
     if session_json_str:
         try:
@@ -184,8 +181,6 @@ def validate_session():
     return True
 
 def save_session_cache(context, label=""):
-    """context.storage_state() দিয়ে বর্তমান সেশন (আপডেটেড কুকি/টোকেনসহ) ফাইলে সেভ।
-    পরের রানে load_session() এটাকে Secret-এর চেয়ে বেশি প্রায়োরিটি দেবে।"""
     try:
         context.storage_state(path=SESSION_CACHE_FILE)
         print(f"💾 সেশন ক্যাশ সেভ হলো{(' — ' + label) if label else ''}")
@@ -193,8 +188,6 @@ def save_session_cache(context, label=""):
         print(f"⚠️ সেশন ক্যাশ সেভ ব্যর্থ: {e}")
 
 def clear_session_cache():
-    """সেশন dead হলে পুরনো ক্যাশ মুছে ফেলা হয়, যেন পরের রানে load_session()
-    বাধ্য হয়ে fresh GitHub Secret ব্যবহার করে — নাহলে বারবার একই মৃত ক্যাশ লোড হতো।"""
     if os.path.exists(SESSION_CACHE_FILE):
         os.remove(SESSION_CACHE_FILE)
         print("🗑️ পুরনো সেশন ক্যাশ মুছে ফেলা হলো — পরের রানে fresh Secret ব্যবহার হবে")
@@ -659,21 +652,8 @@ def find_matching_tweet_index(page, target_text, search_range=10):
     return None
 
 # ──────────────────────────────────────────────
-# DEEPSEEK REWRITE (caption generation)
+# DEEPSEEK REWRITE (Instant mode + Search + DeepThink — den.py-এর প্রমাণিত লজিক)
 # ──────────────────────────────────────────────
-def _deepseek_select_expert_mode(page) -> None:
-    try:
-        expert_radio = page.query_selector('div[data-model-type="expert"][role="radio"]')
-        if expert_radio:
-            checked = expert_radio.get_attribute("aria-checked")
-            if checked != "true":
-                expert_radio.click()
-                page.wait_for_timeout(random.uniform(500, 800))
-        else:
-            print("  ⚠️  DeepSeek Expert radio option খুঁজে পাওয়া যায়নি।")
-    except Exception as e:
-        print(f"  ⚠️  DeepSeek Expert mode selection error: {e}")
-
 def _deepseek_ensure_toggle_on(page, label_text: str) -> None:
     try:
         toggles = page.query_selector_all("div[aria-pressed]")
@@ -732,13 +712,17 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
         print("  🌐 DeepSeek page loading...")
         page.goto("https://chat.deepseek.com/", wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(3000)
-        _deepseek_select_expert_mode(page)
+
+        # Instant mode-এই থাকি (Expert সিলেক্ট করা হয় না) — den.py-এর মতো
+        _deepseek_ensure_toggle_on(page, "Search")
         _deepseek_ensure_toggle_on(page, "DeepThink")
+
         textarea = _deepseek_find_textarea(page)
         if not textarea:
             print("  ❌ DeepSeek textarea not found.")
             page.screenshot(path=f"deepseek_debug_{int(time.time())}.png")
             return None
+
         textarea.click()
         page.wait_for_timeout(500)
         if not _deepseek_is_focused(page, textarea):
@@ -746,6 +730,7 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
             page.wait_for_timeout(500)
             if not _deepseek_is_focused(page, textarea):
                 print("  ⚠️  DeepSeek: ক্লিকের পরও ইনপুট বক্স focused হয়নি, তবু টাইপ করার চেষ্টা চলছে...")
+
         textarea.fill(prompt)
         page.wait_for_timeout(random.uniform(500, 800))
         try:
@@ -767,6 +752,7 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
             if not textarea or not current_value.strip():
                 print("  ❌ DeepSeek: রিট্রাইতেও বক্স খালি — প্রম্পট সাবমিট না করেই থামছে।")
                 return None
+
         sent = False
         try:
             btn = page.wait_for_selector(
@@ -779,12 +765,14 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
             pass
         if not sent:
             page.keyboard.press("Enter")
-        print("  ⏳ Waiting for DeepSeek response (Expert mode + DeepThink, ~90s)...")
+
+        print("  ⏳ Waiting for DeepSeek response (Search + DeepThink, ~90s)...")
         page.wait_for_timeout(90000)
+
         response_text = ""
         last_text = ""
         stable_count = 0
-        for _ in range(20):
+        for _ in range(30):
             page.wait_for_timeout(2000)
             try:
                 blocks = page.query_selector_all(
@@ -792,21 +780,21 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
                 )
                 if blocks:
                     last_block = blocks[-1]
-                    page.evaluate(
+                    # সাইটেশন widget-গুলো টেক্সট তোলার আগেই DOM থেকে সরানো হয় —
+                    # নাহলে hidden spacer span (opacity:0 কিন্তু layout দখল করে) থাকায়
+                    # Chromium-এর innerText অযাচিত লাইন-ব্রেক ঢুকিয়ে দেয়। সংখ্যাওয়ালা
+                    # badge গুলো .ds-markdown-cite-এ, আর SVG-লোগো/লিংক-টাইপগুলো
+                    # DeepSeek-এর নিজস্ব hash class-এ (বিল্ডে বদলায়) — তাই class-এর
+                    # বদলে inline style + ভেতরে svg এই structural প্যাটার্ন ধরা হয়।
+                    last_block.evaluate(
                         """(el) => {
-                            el.querySelectorAll('a').forEach(a => a.remove());
-                            el.querySelectorAll('span[style]').forEach(sp => {
-                                const st = (sp.getAttribute('style') || '').replace(/\\s+/g, '');
-                                if (st.includes('cursor:pointer')) {
-                                    sp.remove();
-                                }
+                            el.querySelectorAll('.ds-markdown-cite').forEach(n => n.remove());
+                            el.querySelectorAll('span[style*="cursor: pointer"]').forEach(n => {
+                                if (n.querySelector('svg')) n.remove();
                             });
-                        }""",
-                        last_block,
+                        }"""
                     )
                     txt = last_block.inner_text().strip()
-                    lines = [" ".join(line.split()) for line in txt.splitlines()]
-                    txt = "\n".join(lines)
                     txt = re.sub(r'\n{3,}', '\n\n', txt).strip()
                     if txt:
                         if txt == last_text:
@@ -819,12 +807,15 @@ def deepseek_rewrite(context, prompt: str) -> str | None:
                             break
             except Exception:
                 pass
+
         if not response_text and last_text:
             response_text = last_text
-        REFUSAL_PHRASES = ["beyond my current scope"]
+
+        REFUSAL_PHRASES = ["beyond my current scope", "i cannot", "i'm unable"]
         if response_text and any(p in response_text.lower() for p in REFUSAL_PHRASES):
             print(f"  🚫 DeepSeek refused: {response_text[:80]}...")
-            response_text = ""
+            return None
+
         if response_text:
             print(f"  ✅ DeepSeek response: {response_text[:100]}...")
             return response_text
@@ -892,18 +883,30 @@ Example: 2"""
     return None
 
 # ──────────────────────────────────────────────
-# CAPTION GENERATION (DeepSeek, new prompt)
+# CAPTION GENERATION (DeepSeek Instant + Search + DeepThink, নতুন প্রম্প্ট)
 # ──────────────────────────────────────────────
 def build_final_caption(original_text, context=None):
-    prompt = f"""Paraphrase this Tweet in simple easy to understand words within 280 characters.
-In English.
-No Emoji.
-If any quote is present, feel free to include the most important part of it with quote marks (" ")
-DO NOT GIVE INCOMPLETE INFORMATIONS.
+    prompt = f"""IMPORTANT: All output must be in simple words.
+
+Think step by step: Internally create 3 distinct drafts, each with a main sentence and 2, 3 detailed sentences everything under 280 total characters with key facts, in simple words. Then critically compare them—check for conciseness, factual accuracy, and strict character limit. Select the best one or merge the strongest parts into a single final version. After that, output only the final two lines in the format below, with no extra text.
+
+Search web, rewrite this into a main sentence and 2, 3 detailed sentences everything under 280 total characters with key facts only, in simple words. No extra words. Try to include any relevant direct quotes if available.
+If search does not confirm the tweet, ignore all other rules and just rewrite the tweet in simple words. Do not fact-check, do not add extra info, and do not follow the title/sentence format.
+
 CRITICAL FORMAT RULES:
-Use as many sentences as the content naturally needs (1, 2, or 3).
-Separate each sentence with exactly one blank line.
+- Output exactly two lines separated by one blank line.
+- First line: Main sentence.
+- Leave a blank line.
+- Third line: 2 or 3 detailed sentences.
+
+Example of correct output:
+
+Catastrophic 7.8 magnitude earthquake hits central Turkey, over 1,500 dead
+
+Rescue teams work early Monday in freezing weather. They pull survivors from collapsed buildings as the death toll rises and thousands remain injured.
+
 Tweet
+
 {original_text}"""
     if context:
         result = deepseek_rewrite(context, prompt)
@@ -1371,14 +1374,12 @@ def run_bot_loop():
             delay = human_delay(iteration, now.hour)
             print(f"⏳ Next post in {delay//60} minutes...", flush=True)
             time.sleep(delay)
-        # ফিক্স: রান শেষে চূড়ান্ত state সেভ — সেশন dead হলে ক্যাশ মুছে ফেলা হয়,
-        # যেন পরের রান fresh Secret নেয়।
         if session_died:
             clear_session_cache()
         else:
             save_session_cache(context, label="run end")
         browser.close()
-    print("\n🔒 Browser closed. Loop ended.", flush=True)
+        print("\n🔒 Browser closed. Loop ended.", flush=True)
 
 if __name__ == "__main__":
     delay = random.randint(60, 180)
